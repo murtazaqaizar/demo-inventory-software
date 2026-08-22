@@ -1,0 +1,249 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Design tokens — see design/DESIGN.md ("Workshop"). Do not hardcode colours
+   in components; every value below is available as a Tailwind utility.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@theme {
+  /* Surfaces — the warm ground IS the elevation system. White panels read as
+     raised because they sit on oat, not because of a shadow. */
+  --color-canvas: #f4f1ea;
+  --color-surface: #ffffff;
+  --color-surface-alt: #faf8f4;
+
+  /* Hairlines */
+  --color-line: #e6e0d5;
+  --color-line-strong: #cdc4b4;
+
+  /* Ink */
+  --color-ink: #1a1814;
+  --color-ink-muted: #5f584c;
+  --color-ink-faint: #6f6859;
+
+  /* Accent — deep teal. Never green: `ok` needs green. */
+  --color-accent: #0f5f6b;
+  --color-accent-hover: #0c4e58;
+  --color-accent-press: #093c44;
+  --color-accent-soft: #e0eef0;
+
+  /* Semantic — state only, never emphasis or decoration */
+  --color-ok: #26682f;
+  --color-ok-soft: #e6f2e4;
+  --color-warn: #8a4f0a;
+  --color-warn-soft: #fbeedb;
+  --color-bad: #b3261e;
+  --color-bad-soft: #f9e7e5;
+
+  /* Type */
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Radius — ceiling is 14px. 20px on a data panel reads as a consumer app. */
+  --radius-control: 10px;
+  --radius-panel: 14px;
+  --radius-chip: 6px;
+
+  /* Elevation */
+  --shadow-panel: 0 1px 2px rgba(26, 24, 20, 0.05);
+  --shadow-float: 0 8px 24px rgba(26, 24, 20, 0.10);
+
+  /* Motion */
+  --ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Base
+   ═══════════════════════════════════════════════════════════════════════════ */
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 15px;          /* base is 15, not 14 — see DESIGN.md typography */
+  letter-spacing: 0.16px;   /* Carbon's precision detail. Do not remove. */
+}
+
+/* The 0.16px body tracking must not carry over to numerals. */
+.font-mono,
+code,
+kbd,
+pre {
+  letter-spacing: 0;
+}
+
+/* Every figure a user compares down a column is tabular. */
+.font-mono,
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+/* This is a light business app — force light form controls so text stays
+   readable even when the device is in dark mode (inputs were white-on-white). */
+input,
+select,
+textarea {
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-ink-faint);
+}
+input[type="date"],
+input[type="month"] {
+  color-scheme: light;
+}
+
+/* Focus is always visible and always replaced if removed. */
+:focus-visible {
+  /* An outline, not a box-shadow: Panel and the table wrapper are clipping
+     ancestors, and a shadow ring gets cut off at their edges. accent-soft on
+     white is only 1.19:1, so it can never be the ring on its own. */
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+  border-color: var(--color-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 100ms !important;  /* opacity fades survive */
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Horizontal scroll only in the narrow band where it is actually needed.
+   Above 900px the wrapper goes back to `visible` — otherwise it becomes the
+   sticky scrollport for group headers and clips the row-actions menu. */
+.tablewrap {
+  overflow-x: auto;
+}
+@media (min-width: 900px) {
+  .tablewrap {
+    overflow-x: visible;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Responsive tables: on phones each row becomes a stacked card with labels
+   (no sideways scrolling). Add class "rtable" to the <table> and data-label
+   to each <td>. Group headers become sticky section labels.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 767px) {
+  table.rtable {
+    min-width: 0 !important;
+    display: block;
+  }
+  table.rtable thead {
+    display: none;
+  }
+  table.rtable tbody {
+    display: block;
+  }
+  table.rtable tr {
+    display: block;
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-control);
+    margin: 10px;
+    padding: 6px 14px;
+    background: var(--color-surface);
+  }
+  table.rtable td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0 !important;
+    text-align: right;
+    border: none !important;
+    height: auto !important;
+  }
+  table.rtable td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--color-ink-muted);
+    font-size: 13px;
+    text-align: left;
+    flex-shrink: 0;
+  }
+  /* Group header rows collapse to a sticky section label. */
+  table.rtable tr[data-group] {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--color-surface-alt);
+    border-radius: 0;
+    margin: 14px 0 0;
+    padding: 8px 14px;
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  table.rtable tr[data-group] td {
+    padding: 0 !important;
+    text-align: left;
+  }
+  table.rtable tr[data-group] td::before {
+    content: none;
+  }
+  table.rtable tfoot {
+    display: block;
+  }
+  table.rtable tfoot tr {
+    background: var(--color-surface-alt);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   A4 print: drop the app chrome and every trace of the theme. A document a
+   customer receives must not carry app colour, radius or shadow.
+   ═══════════════════════════════════════════════════════════════════════════ */
+@media print {
+  header,
+  nav,
+  aside,
+  .no-print {
+    display: none !important;
+  }
+  html,
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+    font-size: 12pt;
+    letter-spacing: 0;
+  }
+  main {
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+  .print-sheet,
+  .panel {
+    box-shadow: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    background: #ffffff !important;
+  }
+  table {
+    border-color: #000 !important;
+  }
+  /* Status tints must not print — a statement is not app chrome. */
+  .print-sheet [class*="bg-ok"],
+  .print-sheet [class*="bg-warn"],
+  .print-sheet [class*="bg-bad"],
+  .print-sheet [class*="bg-surface"] {
+    background: #ffffff !important;
+    border-color: #000 !important;
+  }
+  .print-sheet [class*="text-ok"],
+  .print-sheet [class*="text-warn"],
+  .print-sheet [class*="text-bad"],
+  .print-sheet [class*="text-ink"] {
+    color: #000000 !important;
+  }
+  /* @page lives in src/components/print-sheet.tsx, not here: the paper margins
+     are a saved setting now, so the shop can move the text clear of its own
+     letterhead artwork. Two competing @page rules would leave which one wins
+     down to stylesheet order. */
+}

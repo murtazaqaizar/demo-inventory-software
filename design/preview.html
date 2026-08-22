@@ -1,0 +1,1094 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design directions — Inventory, Billing &amp; Accounts</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   CHROME — the preview's own UI, not part of any direction
+   ══════════════════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: #1c1e22; color: #e6e8ea;
+  font: 400 14px/1.5 Inter, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.chrome { padding: 20px 24px 0; max-width: 1680px; margin: 0 auto; }
+.chrome h1 { font-size: 17px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+.chrome .sub { font-size: 13px; color: #9aa0a8; margin: 0 0 18px; max-width: 900px; }
+.tabrow { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.tab {
+  appearance: none; border: 1px solid #34383e; background: #24272b; color: #c3c8ce;
+  padding: 8px 14px; border-radius: 6px; font: 500 13px Inter, sans-serif; cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.tab:hover { background: #2c3035; color: #fff; }
+.tab[aria-selected="true"] { background: #e6e8ea; color: #16181b; border-color: #e6e8ea; }
+.tabrow.screens .tab { font-size: 12px; padding: 6px 11px; }
+.blurb {
+  font-size: 12.5px; line-height: 1.55; color: #a8aeb6; margin: 0 0 14px;
+  padding: 10px 14px; background: #212429; border: 1px solid #31353b; border-radius: 6px;
+  max-width: 1100px;
+}
+.blurb b { color: #e6e8ea; font-weight: 600; }
+.blurb .cost { color: #e0a340; }
+.stage {
+  border: 1px solid #34383e; border-radius: 8px 8px 0 0; overflow: hidden;
+  height: calc(100vh - 250px); min-height: 560px; margin: 0 auto; max-width: 1680px;
+  background: #fff;
+}
+.stage > .app { height: 100%; overflow: auto; }
+.legend { max-width: 1680px; margin: 0 auto; padding: 10px 0 28px; font-size: 11.5px; color: #7d838b; }
+
+/* ══════════════════════════════════════════════════════════════════
+   SHARED PRIMITIVES — tokens differ per direction, structure does not
+   ══════════════════════════════════════════════════════════════════ */
+.app { font-feature-settings: normal; }
+.num { font-variant-numeric: tabular-nums; }
+.app table { border-collapse: collapse; width: 100%; }
+.app button, .app input, .app select { font-family: inherit; }
+.app a { text-decoration: none; color: inherit; }
+
+/* ══════════════════════════════════════════════════════════════════
+   DIRECTION 1 — LEDGER
+   grouped sidebar · inline stat strip · flat, zero cards · dense table
+   ══════════════════════════════════════════════════════════════════ */
+.l-app {
+  --bg:#f6f7f9; --surface:#fff; --surface-alt:#f0f2f5; --border:#e2e6ec; --border-strong:#c8cfd9;
+  --text:#14171c; --muted:#5a6472; --faint:#8a94a3;
+  --accent:#2457a8; --accent-hover:#1d4a91; --accent-soft:#e8eef8;
+  --ok:#1f7a3d; --ok-soft:#e4f2e8; --warn:#9a6100; --warn-soft:#fbf0dc; --bad:#b3261e; --bad-soft:#fbeae9;
+  font-family: Inter, system-ui, sans-serif; font-size: 13px; color: var(--text);
+  background: var(--bg); display: flex; min-height: 100%;
+}
+.l-mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+.l-side { width: 220px; flex: 0 0 220px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+.l-brand { padding: 14px 16px; border-bottom: 1px solid var(--border); }
+.l-brand b { display: block; font-size: 13px; font-weight: 600; }
+.l-brand span { font-size: 11px; color: var(--faint); }
+.l-nav { flex: 1; padding: 10px 8px; overflow: auto; }
+.l-group { font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); padding: 12px 8px 5px; }
+.l-nav a { display: block; padding: 5px 8px; border-radius: 3px; font-size: 13px; color: var(--muted); transition: background .12s, color .12s; }
+.l-nav a:hover { background: var(--surface-alt); color: var(--text); }
+.l-nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+.l-userbar { border-top: 1px solid var(--border); padding: 10px 12px; font-size: 11px; color: var(--faint); }
+
+.l-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.l-head { display: flex; align-items: baseline; justify-content: space-between; padding: 20px 24px 0; }
+.l-title { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+.l-sub { font-size: 12px; color: var(--muted); margin: 3px 0 0; }
+
+/* inline stat strip — no cards, hairline dividers, ONE hero figure */
+.l-strip { display: flex; align-items: flex-end; gap: 0; margin: 18px 24px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 16px 0; }
+.l-stat { padding: 0 24px; border-right: 1px solid var(--border); }
+.l-stat:last-child { border-right: 0; }
+.l-stat.hero { padding-left: 0; }
+.l-lab { font-size: 11px; font-weight: 500; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.l-hero-fig { font-size: 40px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
+.l-fig { font-size: 20px; font-weight: 600; line-height: 1; }
+.l-delta { font-size: 11px; margin-top: 6px; color: var(--muted); }
+.l-delta.up { color: var(--ok); }
+
+.l-body { padding: 20px 24px 32px; flex: 1; }
+.l-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; }
+.l-secthead { display: flex; align-items: baseline; justify-content: space-between; border-bottom: 1px solid var(--border-strong); padding-bottom: 6px; margin-bottom: 0; }
+.l-secthead h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.l-secthead a { font-size: 12px; color: var(--accent); }
+.l-secthead a:hover { text-decoration: underline; }
+
+/* flat table — sits directly on canvas, no wrapper, no radius */
+.l-table th { font-size: 12px; font-weight: 500; color: var(--muted); text-align: left; padding: 7px 12px; background: var(--surface-alt); border-bottom: 1px solid var(--border-strong); position: sticky; top: 0; }
+.l-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); height: 36px; background: var(--surface); }
+.l-table tr:hover td { background: var(--surface-alt); }
+.l-table .r { text-align: right; }
+.l-table .code { font-size: 12px; color: var(--muted); }
+.l-empty { padding: 48px; text-align: center; color: var(--muted); }
+
+.l-toolbar { display: flex; gap: 8px; align-items: center; padding: 10px 0 12px; }
+.l-input { height: 32px; border: 1px solid var(--border-strong); border-radius: 5px; padding: 0 10px; font-size: 13px; background: var(--surface); color: var(--text); outline: none; }
+.l-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(36,87,168,.3); }
+.l-btn { height: 32px; border-radius: 5px; padding: 0 12px; font-size: 13px; font-weight: 500; border: 1px solid transparent; background: var(--accent); color: #fff; cursor: pointer; transition: background .12s; }
+.l-btn:hover { background: var(--accent-hover); }
+.l-btn.sec { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+.l-btn.sec:hover { background: var(--surface-alt); }
+.l-link { color: var(--accent); font-size: 12px; }
+.l-link:hover { text-decoration: underline; }
+.l-pill { display: inline-block; font-size: 11px; font-weight: 500; border-radius: 999px; padding: 2px 8px; }
+.l-pill.ok { background: var(--ok-soft); color: var(--ok); }
+.l-pill.warn { background: var(--warn-soft); color: var(--warn); }
+.l-pill.bad { background: var(--bad-soft); color: var(--bad); }
+.l-pill.mute { background: var(--surface-alt); color: var(--muted); }
+.l-page { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; font-size: 12px; color: var(--muted); }
+
+/* ledger form — single column, capped field width, sticky total bar */
+.l-form { max-width: 420px; }
+.l-field { margin-bottom: 16px; }
+.l-field label { display: block; font-size: 12px; font-weight: 500; color: var(--muted); margin-bottom: 5px; }
+.l-field .l-input { width: 100%; }
+.l-lines th { font-size: 12px; }
+.l-stick { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border-strong); padding: 12px 24px; margin: 0 -24px -32px; display: flex; justify-content: space-between; align-items: center; }
+.l-kv { display: grid; grid-template-columns: 130px 1fr; gap: 7px 16px; font-size: 13px; }
+.l-kv dt { color: var(--muted); font-size: 12px; }
+.l-kv dd { margin: 0; }
+
+/* ══════════════════════════════════════════════════════════════════
+   DIRECTION 2 — WORKSHOP
+   top bar + tabs · metrics demoted to right rail · grouped table · panels
+   ══════════════════════════════════════════════════════════════════ */
+.w-app {
+  --bg:#f4f1ea; --surface:#fff; --surface-alt:#faf8f4; --border:#e6e0d5; --border-strong:#cdc4b4;
+  --text:#1a1814; --muted:#5f584c; --faint:#8f8778;
+  --accent:#0f5f6b; --accent-hover:#0c4e58; --accent-soft:#e0eef0;
+  --ok:#2f7d3a; --ok-soft:#e6f2e4; --warn:#b4690e; --warn-soft:#fbeedb; --bad:#b3261e; --bad-soft:#f9e7e5;
+  font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 15px; letter-spacing: .16px;
+  color: var(--text); background: var(--bg); min-height: 100%;
+}
+.w-mono { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; letter-spacing: 0; }
+
+.w-top { height: 56px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 32px; gap: 32px; }
+.w-logo { font-size: 15px; font-weight: 600; }
+.w-logo span { display: block; font-size: 12px; font-weight: 400; color: var(--faint); letter-spacing: 0; }
+.w-sections { display: flex; gap: 4px; flex: 1; }
+.w-sections a { padding: 7px 14px; border-radius: 8px; font-size: 15px; font-weight: 500; color: var(--muted); transition: background .14s, color .14s; }
+.w-sections a:hover { background: var(--surface-alt); color: var(--text); }
+.w-sections a.on { background: var(--accent-soft); color: var(--accent); }
+.w-who { font-size: 13px; color: var(--faint); }
+.w-tabs { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 32px; display: flex; gap: 22px; }
+.w-tabs a { padding: 11px 0; font-size: 15px; font-weight: 500; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.w-tabs a.on { color: var(--text); border-bottom-color: var(--accent); }
+
+.w-wrap { padding: 28px 32px 40px; display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 28px; align-items: start; }
+.w-wrap.single { grid-template-columns: minmax(0,1fr); }
+.w-phead { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 4px; }
+.w-h1 { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; margin: 0; }
+.w-psub { font-size: 15px; color: var(--muted); margin: 6px 0 0; max-width: 72ch; }
+
+.w-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 1px 2px rgba(26,24,20,.05); overflow: hidden; }
+.w-panel.pad { padding: 24px; }
+.w-panelhead { padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.w-panelhead h2 { font-size: 18px; font-weight: 600; margin: 0; }
+
+/* the signature component: grouped table with sticky group headers + aggregates */
+.w-grouphead { background: var(--surface-alt); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.w-grouphead td { padding: 9px 16px; font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+.w-grouphead .agg { text-align: right; letter-spacing: 0; text-transform: none; }
+.w-table th { font-size: 13px; font-weight: 500; color: var(--muted); text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+.w-table td { padding: 12px 16px; height: 44px; border-bottom: 1px solid var(--border); font-size: 15px; }
+.w-table tbody tr:hover td { background: var(--surface-alt); }
+.w-table .r { text-align: right; }
+.w-menu { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 6px; width: 28px; height: 28px; cursor: pointer; color: var(--muted); font-size: 14px; line-height: 1; }
+.w-menu:hover { background: var(--surface-alt); color: var(--text); }
+
+.w-rail { display: flex; flex-direction: column; gap: 16px; }
+.w-railblock { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+.w-railblock h3 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); margin: 0 0 14px; }
+.w-stat { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.w-stat:last-child { border-bottom: 0; padding-bottom: 0; }
+.w-stat .lab { font-size: 13px; color: var(--muted); }
+.w-stat .fig { font-size: 22px; font-weight: 600; margin-top: 2px; }
+.w-stat .note { font-size: 13px; color: var(--faint); margin-top: 2px; }
+.w-raillist { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+.w-raillist li { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); }
+.w-raillist li:last-child { border-bottom: 0; }
+
+.w-btn { height: 40px; border-radius: 10px; padding: 0 20px; font-size: 15px; font-weight: 600; border: 1px solid transparent; background: var(--accent); color: #fff; cursor: pointer; transition: background .14s; }
+.w-btn:hover { background: var(--accent-hover); }
+.w-btn.sec { background: var(--surface); border-color: var(--border-strong); color: var(--text); }
+.w-btn.sec:hover { background: var(--surface-alt); }
+.w-btn.sm { height: 34px; font-size: 14px; padding: 0 14px; }
+.w-input { height: 40px; border: 1px solid var(--border-strong); border-radius: 10px; padding: 0 14px; font-size: 15px; background: var(--surface); color: var(--text); outline: none; }
+.w-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.w-pill { display: inline-block; font-size: 13px; font-weight: 500; border-radius: 999px; padding: 4px 10px; letter-spacing: 0; }
+.w-pill.ok { background: var(--ok-soft); color: var(--ok); }
+.w-pill.warn { background: var(--warn-soft); color: var(--warn); }
+.w-pill.bad { background: var(--bad-soft); color: var(--bad); }
+.w-pill.mute { background: var(--surface-alt); color: var(--muted); border: 1px solid var(--border); }
+.w-field { margin-bottom: 20px; max-width: 480px; }
+.w-field label { display: block; font-size: 13px; font-weight: 500; color: var(--muted); margin-bottom: 6px; }
+.w-field .w-input { width: 100%; }
+.w-stickbar { position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--border-strong); box-shadow: 0 -8px 24px rgba(26,24,20,.10); padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; margin: 0 -24px -24px; border-radius: 0 0 14px 14px; }
+.w-filters { display: flex; gap: 10px; padding: 16px 24px; border-bottom: 1px solid var(--border); flex-wrap: wrap; align-items: center; }
+/* segmented control — the group-by switch */
+.w-segment { display: flex; align-items: center; gap: 8px; }
+.w-segment .lab { font-size: 13px; color: var(--muted); }
+.w-segment button { height: 34px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--muted);
+  font-size: 14px; font-weight: 500; padding: 0 14px; cursor: pointer; transition: background .14s, color .14s; }
+.w-segment button:first-of-type { border-radius: 8px 0 0 8px; }
+.w-segment button:last-of-type { border-radius: 0 8px 8px 0; border-left: 0; }
+.w-segment button:hover { background: var(--surface-alt); color: var(--text); }
+.w-segment button.on { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+.w-segment button.on + button { border-left: 0; }
+
+/* ══════════════════════════════════════════════════════════════════
+   DIRECTION 3 — CONSOLE
+   icon rail · status line (no cards) · two-pane master/detail · dark
+   ══════════════════════════════════════════════════════════════════ */
+.c-app {
+  --bg:#0d0f12; --surface:#14171b; --surface-alt:#1b1f24; --border:#252a31; --border-strong:#343b44;
+  --text:#e9ecf0; --muted:#9aa4b0; --faint:#6b7480;
+  --accent:#4d8dff; --accent-hover:#6b9fff; --accent-soft:#16233a;
+  --ok:#3ecf7f; --ok-soft:#12291f; --warn:#e0a340; --warn-soft:#2a2114; --bad:#f4685c; --bad-soft:#2e1613;
+  font-family: Inter, system-ui, sans-serif; font-size: 13px; color: var(--text);
+  background: var(--bg); display: flex; min-height: 100%;
+}
+.c-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+.c-rail { width: 56px; flex: 0 0 56px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 8px 0; }
+.c-railitem { width: 44px; padding: 7px 0; border-radius: 4px; text-align: center; color: var(--faint); cursor: pointer; transition: background .1s, color .1s; }
+.c-railitem:hover { background: var(--surface-alt); color: var(--text); }
+.c-railitem.on { background: var(--accent-soft); color: var(--accent); }
+.c-railicon { font-size: 15px; line-height: 1.1; }
+.c-raillab { font-size: 10px; margin-top: 2px; }
+.c-raildiv { width: 28px; height: 1px; background: var(--border); margin: 8px 0; }
+.c-railspacer { flex: 1; }
+
+.c-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* status line replaces every metric card */
+.c-status { height: 32px; display: flex; align-items: center; gap: 0; padding: 0 14px; border-bottom: 1px solid var(--border); background: var(--surface); flex: 0 0 32px; }
+.c-statitem { padding: 0 14px; border-right: 1px solid var(--border); font-size: 11px; color: var(--muted); display: flex; align-items: baseline; gap: 7px; }
+.c-statitem:last-of-type { border-right: 0; }
+.c-statitem b { font-size: 15px; font-weight: 600; color: var(--text); }
+.c-statitem.alert b { color: var(--warn); }
+.c-kbd { margin-left: auto; font-size: 10px; color: var(--faint); font-family: 'JetBrains Mono', monospace; background: var(--surface-alt); border: 1px solid var(--border); border-radius: 3px; padding: 2px 6px; }
+
+.c-panes { flex: 1; display: flex; min-height: 0; }
+.c-list { width: 380px; flex: 0 0 380px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+.c-listhead { padding: 8px 10px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; align-items: center; }
+.c-search { flex: 1; height: 28px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 0 9px; font-size: 12px; outline: none; }
+.c-search:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(77,141,255,.35); }
+.c-rows { overflow: auto; flex: 1; }
+.c-row { padding: 6px 10px; border-bottom: 1px solid var(--border); cursor: pointer; border-left: 2px solid transparent; transition: background .1s; }
+.c-row:hover { background: var(--surface-alt); }
+.c-row.sel { background: var(--accent-soft); border-left-color: var(--accent); }
+.c-row .r1 { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; font-weight: 500; }
+.c-row .r2 { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--muted); margin-top: 1px; }
+
+.c-detail { flex: 1; min-width: 0; padding: 20px 24px; overflow: auto; background: var(--bg); }
+.c-dhead { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+.c-dnum { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+.c-dspacer { flex: 1; }
+.c-eyebrow { font-size: 10px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); }
+.c-kv { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px 20px; padding: 14px 0 18px; border-bottom: 1px solid var(--border); margin-bottom: 18px; }
+.c-kv .v { font-size: 13px; margin-top: 3px; }
+.c-table th { font-size: 10px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border-strong); }
+.c-table td { padding: 6px 10px; height: 32px; font-size: 12px; border-bottom: 1px solid var(--border); }
+.c-table tbody tr:hover td { background: var(--surface-alt); }
+.c-table .r { text-align: right; }
+.c-totals { margin-left: auto; width: 280px; margin-top: 14px; font-size: 12px; }
+.c-totals div { display: flex; justify-content: space-between; padding: 5px 10px; }
+.c-totals .grand { border-top: 1px solid var(--border-strong); margin-top: 4px; padding-top: 8px; font-size: 15px; font-weight: 600; }
+.c-btn { height: 28px; border-radius: 4px; padding: 0 10px; font-size: 12px; font-weight: 500; border: 1px solid transparent; background: var(--accent); color: #0d0f12; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; transition: background .1s; }
+.c-btn:hover { background: var(--accent-hover); }
+.c-btn.sec { background: var(--surface-alt); border-color: var(--border-strong); color: var(--text); }
+.c-btn.sec:hover { border-color: var(--faint); }
+.c-btn.danger { background: var(--bad-soft); color: var(--bad); border-color: rgba(244,104,92,.4); }
+.c-btn .k { font-size: 10px; font-family: 'JetBrains Mono', monospace; opacity: .7; }
+.c-pill { display: inline-block; font-size: 10px; font-weight: 500; border-radius: 3px; padding: 2px 6px; border: 1px solid; }
+.c-pill.ok { background: var(--ok-soft); color: var(--ok); border-color: rgba(62,207,127,.3); }
+.c-pill.warn { background: var(--warn-soft); color: var(--warn); border-color: rgba(224,163,64,.3); }
+.c-pill.bad { background: var(--bad-soft); color: var(--bad); border-color: rgba(244,104,92,.3); }
+.c-pill.mute { background: var(--surface-alt); color: var(--muted); border-color: var(--border); }
+.c-input { height: 28px; background: var(--bg); border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text); padding: 0 9px; font-size: 12px; outline: none; }
+.c-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(77,141,255,.35); }
+.c-field { margin-bottom: 14px; max-width: 380px; }
+.c-field label { display: block; font-size: 10px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+.c-field .c-input { width: 100%; }
+.c-stacklist { border-top: 1px solid var(--border); }
+.c-stackrow { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="chrome">
+  <h1>Three design directions — Inventory, Billing &amp; Accounts</h1>
+  <p class="sub">Real screens from this project, with your own labels and column names. These three do <b>not</b> share markup — the shell, the metric treatment and the way a list is rendered are different in each. Switch direction and screen below.</p>
+
+  <div class="tabrow" role="tablist" id="dirTabs"></div>
+  <div class="tabrow screens" role="tablist" id="screenTabs"></div>
+  <p class="blurb" id="blurb"></p>
+</div>
+
+<div class="chrome"><div class="stage" id="stage"></div>
+<p class="legend">Sample data only — figures and customer names are illustrative. Reference systems (Linear, Stripe, IBM Carbon, Wise) informed density, numerics and contrast strategy; no brand assets are used.</p>
+</div>
+
+<script>
+/* ═════════════ SHARED DATA — same content, three different renderings ═════════════ */
+const money = n => "Rs " + n.toLocaleString("en-PK");
+
+const BILLS = [
+  { no:1042, date:"15 Aug", cust:"Ahmed Traders",        total:48600,  owing:18600, void:false },
+  { no:1041, date:"15 Aug", cust:"Cash customer",        total:6450,   owing:0,     void:false },
+  { no:1040, date:"15 Aug", cust:"Hardware Junction",    total:122900, owing:0,     void:false },
+  { no:1039, date:"14 Aug", cust:"Al-Noor Steel Works",  total:74300,  owing:74300, void:false },
+  { no:1038, date:"14 Aug", cust:"Ahmed Traders",        total:31200,  owing:0,     void:false },
+  { no:1037, date:"14 Aug", cust:"Bilal Auto Parts",     total:9800,   owing:4800,  void:false },
+  { no:1036, date:"13 Aug", cust:"Sadiq & Sons",         total:210450, owing:0,     void:false },
+  { no:1035, date:"13 Aug", cust:"Karachi Tools Centre", total:55000,  owing:0,     void:true, reason:"wrong customer" },
+];
+
+const LOWSTOCK = [
+  { name:"Wire Brush Cup",    spec:'4" twisted',        qty:3,  min:10 },
+  { name:"Emery Cloth Roll",  spec:'4" × 50m · Grit 120', qty:8,  min:15 },
+  { name:"Cutting Disc",      spec:'7" × 2mm',          qty:12, min:20 },
+];
+
+const DEBTORS = [
+  { name:"Al-Noor Steel Works", amt:214800, days:68 },
+  { name:"Ahmed Traders",       amt:148600, days:34 },
+  { name:"Sadiq & Sons",        amt:96200,  days:null },
+  { name:"Bilal Auto Parts",    amt:41300,  days:12 },
+  { name:"Hardware Junction",   amt:22500,  days:null },
+];
+
+const CHEQUES = [
+  { no:"CHQ-88214", bank:"HBL",    party:"Al-Noor Steel Works", date:"18 Aug", amt:120000, dir:"RECEIVED" },
+  { no:"CHQ-77120", bank:"Meezan", party:"Sadiq & Sons",        date:"20 Aug", amt:85000,  dir:"RECEIVED" },
+];
+
+const BILLLINES = [
+  { code:"CD-4402", name:'Cutting Disc 4" × 1mm',            qty:8,  unit:"box", pcs:200, rate:2400, amt:19200 },
+  { code:"FD-2210", name:'Flap Disc 4.5" · Grit 60',         qty:12, unit:"pcs", pcs:12,  rate:640,  amt:7680 },
+  { code:"SP-8801", name:'Sand Paper Sheet 9"×11" · G220',   qty:3,  unit:"box", pcs:300, rate:5400, amt:16200 },
+  { code:"AB-1201", name:'Emery Cloth Roll 4" × 50m · G80',  qty:2,  unit:"box", pcs:20,  rate:2760, amt:5520 },
+];
+const BILLTOTAL = 48600, BILLPAID = 30000;
+
+const STATEMENT = [
+  { date:"01 Aug", detail:"Opening balance",     bill:null,   paid:null,  bal:96400 },
+  { date:"04 Aug", detail:"Bill #1019",          bill:52300,  paid:null,  bal:148700 },
+  { date:"07 Aug", detail:"Payment — cash",      bill:null,   paid:40000, bal:108700 },
+  { date:"11 Aug", detail:"Bill #1027",          bill:38700,  paid:null,  bal:147400 },
+  { date:"14 Aug", detail:"Bill #1038",          bill:31200,  paid:31200, bal:147400 },
+  { date:"15 Aug", detail:"Bill #1042",          bill:48600,  paid:30000, bal:166000 },
+  { date:"15 Aug", detail:"Payment — cheque",    bill:null,   paid:17400, bal:148600 },
+];
+
+const NAVGROUPS = [
+  { group:"Sell",  items:[["Dashboard","dashboard"],["Billing","billing"],["Returns",null]] },
+  { group:"Stock", items:[["Products / Stock",null],["Purchases",null]] },
+  { group:"Money", items:[["Who owes me",null],["Customers (Udhaar)","customer"],["Suppliers",null],["Cheques",null],["Cash & Bank",null],["Expenses",null],["Reports",null]] },
+  { group:"Admin", items:[["Activity log",null],["Users",null]] },
+];
+
+/* ═════════════════════════════════════════════════════════════════════
+   DIRECTION 1 · LEDGER — its own markup, top to bottom
+   grouped sidebar / inline stat strip / flat tables / zero cards
+   ═════════════════════════════════════════════════════════════════════ */
+const Ledger = {
+  shell(screen, inner) {
+    const nav = NAVGROUPS.map(g => `
+      <div class="l-group">${g.group}</div>
+      ${g.items.map(([label, key]) =>
+        `<a href="#" class="${key === screen ? "on" : ""}">${label}</a>`).join("")}
+    `).join("");
+    return `<div class="l-app">
+      <aside class="l-side">
+        <div class="l-brand"><b>Inventory &amp; Accounts</b><span>Wholesale abrasives</span></div>
+        <nav class="l-nav">${nav}</nav>
+        <div class="l-userbar">Murtaza · <b style="font-weight:500">OWNER</b></div>
+      </aside>
+      <div class="l-main">${inner}</div>
+    </div>`;
+  },
+
+  dashboard() {
+    // inline stat strip — ONE hero figure, three supporting, no cards
+    const strip = `
+      <div class="l-strip">
+        <div class="l-stat hero">
+          <div class="l-lab">Owed to you</div>
+          <div class="l-hero-fig l-mono">612,400</div>
+          <div class="l-delta">Rs 184,200 over 30 days</div>
+        </div>
+        <div class="l-stat">
+          <div class="l-lab">Sales today</div>
+          <div class="l-fig l-mono">177,950</div>
+          <div class="l-delta">8 bills</div>
+        </div>
+        <div class="l-stat">
+          <div class="l-lab">Sales this month</div>
+          <div class="l-fig l-mono">1,942,300</div>
+          <div class="l-delta up">▲ 12% vs last month</div>
+        </div>
+        <div class="l-stat">
+          <div class="l-lab">Cash + Bank</div>
+          <div class="l-fig l-mono">1,286,700</div>
+          <div class="l-delta">Cash 214,700 · Meezan 1,072,000</div>
+        </div>
+      </div>`;
+
+    const lowRows = LOWSTOCK.map(p => `
+      <tr>
+        <td>${p.name}<div class="code">${p.spec}</div></td>
+        <td class="r l-mono">${p.qty}</td>
+        <td class="r"><span class="l-pill bad">min ${p.min}</span></td>
+      </tr>`).join("");
+
+    const debtRows = DEBTORS.map(d => `
+      <tr>
+        <td>${d.name}</td>
+        <td class="r l-mono">${d.amt.toLocaleString("en-PK")}</td>
+        <td class="r">${d.days === null ? '<span class="l-pill mute">current</span>'
+          : `<span class="l-pill ${d.days > 60 ? "bad" : "warn"}">${d.days}d</span>`}</td>
+      </tr>`).join("");
+
+    return `
+      <div class="l-head"><div>
+        <h1 class="l-title">Dashboard</h1>
+        <p class="l-sub">Wednesday, 15 August 2026</p>
+      </div></div>
+      ${strip}
+      <div class="l-body"><div class="l-cols">
+        <section>
+          <div class="l-secthead"><h2>Low stock (3)</h2><a href="#">All products →</a></div>
+          <table class="l-table"><tbody>${lowRows}</tbody></table>
+        </section>
+        <section>
+          <div class="l-secthead"><h2>Top debtors</h2><a href="#">Who owes me →</a></div>
+          <table class="l-table"><tbody>${debtRows}</tbody></table>
+        </section>
+      </div></div>`;
+  },
+
+  billing() {
+    const rows = BILLS.map(b => `
+      <tr style="${b.void ? "opacity:.55" : ""}">
+        <td class="l-mono">#${b.no}${b.void ? ' <span class="l-pill bad">VOIDED</span>' : ""}</td>
+        <td class="l-mono" style="color:var(--muted)">${b.date}</td>
+        <td>${b.cust}</td>
+        <td>${b.void ? '<span style="color:var(--faint)">—</span>'
+          : b.owing > 0 ? `<span class="l-pill warn">${money(b.owing)} owing</span>`
+          : '<span class="l-pill ok">Paid</span>'}</td>
+        <td class="r l-mono" style="font-weight:500;${b.void ? "text-decoration:line-through" : ""}">${b.total.toLocaleString("en-PK")}</td>
+        <td><a href="#" class="l-link">Invoice</a> &nbsp;<a href="#" class="l-link">Challan</a></td>
+        <td><a href="#" class="l-link">Edit</a></td>
+      </tr>`).join("");
+
+    return `
+      <div class="l-head">
+        <div><h1 class="l-title">Billing</h1>
+        <p class="l-sub">Every bill is saved here. Search by customer or bill number.</p></div>
+        <button class="l-btn">New bill</button>
+      </div>
+      <div class="l-body">
+        <div class="l-toolbar">
+          <input class="l-input" style="width:280px" placeholder="Customer name or bill #">
+          <input class="l-input" type="date" value="2026-08-01">
+          <input class="l-input" type="date" value="2026-08-15">
+          <button class="l-btn sec">Filter</button>
+        </div>
+        <table class="l-table">
+          <thead><tr>
+            <th>#</th><th>Date</th><th>Customer</th><th>Paid / Owing</th>
+            <th class="r">Total</th><th>Print</th><th>Action</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="l-page"><span>1–8 of 214</span>
+          <span><button class="l-btn sec">Prev</button> <button class="l-btn sec">Next</button></span></div>
+      </div>`;
+  },
+
+  newbill() {
+    const lines = BILLLINES.map(l => `
+      <tr>
+        <td class="l-mono code">${l.code}</td>
+        <td>${l.name}</td>
+        <td class="r l-mono">${l.qty} ${l.unit}</td>
+        <td class="r l-mono" style="color:var(--muted)">${l.pcs}</td>
+        <td class="r l-mono">${l.rate.toLocaleString("en-PK")}</td>
+        <td class="r l-mono" style="font-weight:500">${l.amt.toLocaleString("en-PK")}</td>
+      </tr>`).join("");
+
+    return `
+      <div class="l-head"><div>
+        <h1 class="l-title">New bill</h1>
+        <p class="l-sub">Search a product, set the negotiated rate, and record what the customer pays now — the rest goes on udhaar.</p>
+      </div></div>
+      <div class="l-body">
+        <div class="l-form">
+          <div class="l-field"><label>Customer</label>
+            <select class="l-input" style="width:100%"><option>Ahmed Traders</option><option>Cash customer</option></select></div>
+          <div class="l-field"><label>Bill date</label><input class="l-input" type="date" value="2026-08-15"></div>
+        </div>
+
+        <div class="l-secthead" style="margin-top:24px"><h2>Items</h2>
+          <a href="#">+ Add product</a></div>
+        <table class="l-table l-lines">
+          <thead><tr><th>Code</th><th>Product</th><th class="r">Qty</th><th class="r">Pcs</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead>
+          <tbody>${lines}</tbody>
+        </table>
+
+        <div class="l-secthead" style="margin-top:28px"><h2>Payment now</h2></div>
+        <div style="display:flex;gap:10px;padding-top:12px">
+          <select class="l-input"><option>Cash</option><option>Online transfer</option><option>Cheque</option></select>
+          <input class="l-input" placeholder="Amount Rs" value="30,000" style="width:140px">
+          <button class="l-btn sec">+ Add payment</button>
+        </div>
+
+        <div class="l-stick">
+          <div style="display:flex;gap:28px;align-items:baseline">
+            <span><span class="l-lab" style="display:inline">Bill total</span>
+              <b class="l-mono" style="font-size:20px;margin-left:8px">${BILLTOTAL.toLocaleString("en-PK")}</b></span>
+            <span><span class="l-lab" style="display:inline">Paying now</span>
+              <b class="l-mono" style="font-size:20px;margin-left:8px">${BILLPAID.toLocaleString("en-PK")}</b></span>
+            <span><span class="l-lab" style="display:inline">On udhaar</span>
+              <b class="l-mono" style="font-size:20px;margin-left:8px;color:var(--warn)">${(BILLTOTAL-BILLPAID).toLocaleString("en-PK")}</b></span>
+          </div>
+          <div><button class="l-btn sec">Cancel</button> <button class="l-btn">Save bill</button></div>
+        </div>
+      </div>`;
+  },
+
+  customer() {
+    const rows = STATEMENT.map(s => `
+      <tr>
+        <td class="l-mono" style="color:var(--muted)">${s.date}</td>
+        <td>${s.detail}</td>
+        <td class="r l-mono">${s.bill ? s.bill.toLocaleString("en-PK") : '<span style="color:var(--faint)">—</span>'}</td>
+        <td class="r l-mono">${s.paid ? s.paid.toLocaleString("en-PK") : '<span style="color:var(--faint)">—</span>'}</td>
+        <td class="r l-mono" style="font-weight:500">${s.bal.toLocaleString("en-PK")}</td>
+      </tr>`).join("");
+
+    return `
+      <div class="l-head">
+        <div><h1 class="l-title">Ahmed Traders</h1>
+        <p class="l-sub">Jodia Bazaar, Karachi · 0300-2145566</p></div>
+        <div><button class="l-btn sec">Edit</button> <button class="l-btn">Record payment</button></div>
+      </div>
+      <div class="l-strip">
+        <div class="l-stat hero">
+          <div class="l-lab">Outstanding</div>
+          <div class="l-hero-fig l-mono">148,600</div>
+          <div class="l-delta">oldest 34 days</div>
+        </div>
+        <div class="l-stat"><div class="l-lab">Credit limit</div><div class="l-fig l-mono">200,000</div></div>
+        <div class="l-stat"><div class="l-lab">Bills this month</div><div class="l-fig l-mono">6</div></div>
+        <div class="l-stat"><div class="l-lab">Lifetime sales</div><div class="l-fig l-mono">2,184,900</div></div>
+      </div>
+      <div class="l-body">
+        <div class="l-secthead"><h2>Running statement</h2><a href="#">Print statement →</a></div>
+        <table class="l-table">
+          <thead><tr><th>Date</th><th>Detail</th><th class="r">Bill</th><th class="r">Paid</th><th class="r">Balance</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+  },
+};
+
+/* ═════════════════════════════════════════════════════════════════════
+   DIRECTION 2 · WORKSHOP — its own markup, top to bottom
+   top bar + tabs / metrics in a right rail / grouped table / panels
+   ═════════════════════════════════════════════════════════════════════ */
+const Workshop = {
+  shell(screen, inner) {
+    const sections = ["Sell", "Stock", "Money", "Admin"];
+    const active = screen === "customer" ? "Money" : "Sell";
+    const tabsFor = { Sell: ["Dashboard", "Billing", "Returns"], Money: ["Who owes me", "Customers", "Suppliers", "Cheques", "Cash & Bank", "Expenses", "Reports"] };
+    const onTab = { dashboard: "Dashboard", billing: "Billing", newbill: "Billing", customer: "Customers" }[screen];
+    return `<div class="w-app">
+      <header class="w-top">
+        <div class="w-logo">Inventory &amp; Accounts<span>Wholesale abrasives</span></div>
+        <nav class="w-sections">${sections.map(s => `<a href="#" class="${s === active ? "on" : ""}">${s}</a>`).join("")}</nav>
+        <div class="w-who">Murtaza · OWNER</div>
+      </header>
+      <nav class="w-tabs">${(tabsFor[active] || []).map(t => `<a href="#" class="${t === onTab ? "on" : ""}">${t}</a>`).join("")}</nav>
+      ${inner}
+    </div>`;
+  },
+
+  // metrics live in the rail — never as a row of equal cards
+  rail(blocks) { return `<aside class="w-rail">${blocks}</aside>`; },
+
+  dashboard() {
+    // WORKING LIST FIRST, grouped by day, full panel width
+    const byDay = {};
+    BILLS.forEach(b => { (byDay[b.date] ||= []).push(b); });
+    const groups = Object.entries(byDay).map(([day, bs]) => {
+      const sum = bs.reduce((s, b) => s + (b.void ? 0 : b.total), 0);
+      return `
+        <tr class="w-grouphead">
+          <td colspan="3">${day} 2026</td>
+          <td colspan="2" class="agg w-mono">${bs.length} bills · ${money(sum)}</td>
+        </tr>
+        ${bs.map(b => `
+          <tr style="${b.void ? "opacity:.55" : ""}">
+            <td class="w-mono">#${b.no}</td>
+            <td>${b.cust}</td>
+            <td>${b.void ? '<span class="w-pill bad">Voided</span>'
+              : b.owing > 0 ? `<span class="w-pill warn">${money(b.owing)} owing</span>`
+              : '<span class="w-pill ok">Paid</span>'}</td>
+            <td class="r w-mono" style="font-weight:500">${money(b.total)}</td>
+            <td class="r"><button class="w-menu">⋯</button></td>
+          </tr>`).join("")}`;
+    }).join("");
+
+    const rail = this.rail(`
+      <div class="w-railblock">
+        <h3>This month</h3>
+        <div class="w-stat"><div class="lab">Sales</div><div class="fig w-mono">${money(1942300)}</div>
+          <div class="note" style="color:var(--ok)">▲ 12% vs last month</div></div>
+        <div class="w-stat"><div class="lab">Owed to you</div><div class="fig w-mono">${money(612400)}</div>
+          <div class="note">${money(184200)} over 30 days</div></div>
+        <div class="w-stat"><div class="lab">Cash + Bank</div><div class="fig w-mono">${money(1286700)}</div>
+          <div class="note">Cash 214,700 · Meezan 1,072,000</div></div>
+      </div>
+      <div class="w-railblock">
+        <h3>Low stock (3)</h3>
+        <ul class="w-raillist">${LOWSTOCK.map(p => `
+          <li><span>${p.name}<br><span style="font-size:13px;color:var(--faint)">${p.spec}</span></span>
+            <span class="w-pill bad w-mono">${p.qty} / ${p.min}</span></li>`).join("")}</ul>
+      </div>
+      <div class="w-railblock">
+        <h3>Cheques due</h3>
+        <ul class="w-raillist">${CHEQUES.map(c => `
+          <li><span>${c.no}<br><span style="font-size:13px;color:var(--faint)">${c.bank} · ${c.date}</span></span>
+            <span class="w-mono" style="font-weight:600">${money(c.amt)}</span></li>`).join("")}</ul>
+      </div>`);
+
+    return `<div class="w-wrap">
+      <div class="w-phead">
+        <div><h1 class="w-h1">Today at the counter</h1>
+          <p class="w-psub">Bills raised in the last three days, newest first.</p></div>
+        <button class="w-btn">+ New bill</button>
+      </div>
+      <main class="w-panel">
+        <table class="w-table">
+          <thead><tr><th>Bill</th><th>Customer</th><th>Status</th><th class="r">Total</th><th></th></tr></thead>
+          <tbody>${groups}</tbody>
+        </table>
+      </main>
+      ${rail}
+    </div>`;
+  },
+
+  billing() {
+    // group-by is a USER CONTROL, not a fixed choice — date by default, customer on demand
+    const byDate = GROUPBY === "date";
+    const buckets = {};
+    BILLS.forEach(b => { (buckets[byDate ? b.date : b.cust] ||= []).push(b); });
+    const groups = Object.entries(buckets).map(([key, bs]) => {
+      const sum = bs.reduce((s, b) => s + (b.void ? 0 : b.total), 0);
+      const owed = bs.reduce((s, b) => s + b.owing, 0);
+      const label = byDate ? `${key} 2026` : key;
+      return `
+        <tr class="w-grouphead">
+          <td colspan="3">${label}</td>
+          <td colspan="2" class="agg w-mono">${bs.length} bill${bs.length > 1 ? "s" : ""} · ${money(sum)}${owed ? ` · <span style="color:var(--warn)">${money(owed)} owing</span>` : ""}</td>
+        </tr>
+        ${bs.map(b => `
+          <tr style="${b.void ? "opacity:.55" : ""}">
+            <td class="w-mono">#${b.no}</td>
+            <td>${byDate ? b.cust : `<span class="w-mono" style="color:var(--muted)">${b.date}</span>`}</td>
+            <td>${b.void ? `<span class="w-pill bad">Voided — ${b.reason}</span>`
+              : b.owing > 0 ? `<span class="w-pill warn">${money(b.owing)} owing</span>`
+              : '<span class="w-pill ok">Paid</span>'}</td>
+            <td class="r w-mono" style="font-weight:500">${money(b.total)}</td>
+            <td class="r"><button class="w-menu">⋯</button></td>
+          </tr>`).join("")}`;
+    }).join("");
+
+    return `<div class="w-wrap single">
+      <div class="w-phead">
+        <div><h1 class="w-h1">Billing</h1>
+          <p class="w-psub">Every bill is saved here. Search by customer or bill number.</p></div>
+        <button class="w-btn">+ New bill</button>
+      </div>
+      <main class="w-panel">
+        <div class="w-filters">
+          <input class="w-input" style="width:300px" placeholder="Customer name or bill #">
+          <input class="w-input" type="date" value="2026-08-01">
+          <input class="w-input" type="date" value="2026-08-15">
+          <button class="w-btn sec sm">Apply</button>
+          <div class="w-segment" style="margin-left:auto">
+            <span class="lab">Group by</span>
+            <button class="${byDate ? "on" : ""}" onclick="setGroup('date')">Date</button>
+            <button class="${byDate ? "" : "on"}" onclick="setGroup('cust')">Customer</button>
+          </div>
+        </div>
+        <table class="w-table">
+          <thead><tr><th>Bill</th><th>${byDate ? "Customer" : "Date"}</th><th>Status</th><th class="r">Total</th><th></th></tr></thead>
+          <tbody>${groups}</tbody>
+        </table>
+      </main>
+    </div>`;
+  },
+
+  newbill() {
+    const lines = BILLLINES.map(l => `
+      <tr>
+        <td><b style="font-weight:500">${l.name}</b><div style="font-size:13px;color:var(--faint)" class="w-mono">${l.code}</div></td>
+        <td class="r w-mono">${l.qty} ${l.unit}</td>
+        <td class="r w-mono" style="color:var(--muted)">${l.pcs} pcs</td>
+        <td class="r w-mono">${l.rate.toLocaleString("en-PK")}</td>
+        <td class="r w-mono" style="font-weight:600">${l.amt.toLocaleString("en-PK")}</td>
+        <td class="r"><button class="w-menu">⋯</button></td>
+      </tr>`).join("");
+
+    return `<div class="w-wrap single">
+      <div class="w-phead">
+        <div><h1 class="w-h1">New bill</h1>
+          <p class="w-psub">Search a product, set the negotiated rate, and record what the customer pays now — the rest goes on udhaar.</p></div>
+      </div>
+      <main class="w-panel pad">
+        <div style="display:flex;gap:24px;flex-wrap:wrap">
+          <div class="w-field" style="width:320px"><label>Customer</label>
+            <select class="w-input"><option>Ahmed Traders</option><option>Cash customer</option></select></div>
+          <div class="w-field" style="width:200px"><label>Bill date</label>
+            <input class="w-input" type="date" value="2026-08-15"></div>
+        </div>
+
+        <h2 style="font-size:18px;font-weight:600;margin:8px 0 12px">Items</h2>
+        <table class="w-table" style="border:1px solid var(--border);border-radius:10px;overflow:hidden">
+          <thead><tr><th>Product</th><th class="r">Qty</th><th class="r">Pieces</th><th class="r">Rate</th><th class="r">Amount</th><th></th></tr></thead>
+          <tbody>${lines}</tbody>
+        </table>
+        <div style="display:flex;gap:10px;margin-top:14px">
+          <input class="w-input" style="flex:1;max-width:420px" placeholder="Search product by name, code or size…">
+          <button class="w-btn sec">Add item</button>
+        </div>
+
+        <h2 style="font-size:18px;font-weight:600;margin:28px 0 12px">Payment now</h2>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <select class="w-input"><option>Cash</option><option>Online transfer</option><option>Cheque</option></select>
+          <input class="w-input" style="width:180px" placeholder="Amount Rs" value="30,000">
+          <button class="w-btn sec">+ Add payment</button>
+        </div>
+
+        <div class="w-stickbar">
+          <div style="display:flex;gap:32px;align-items:baseline">
+            <span style="font-size:13px;color:var(--muted)">Bill total
+              <b class="w-mono" style="font-size:22px;color:var(--text);margin-left:8px">${money(BILLTOTAL)}</b></span>
+            <span style="font-size:13px;color:var(--muted)">On udhaar
+              <b class="w-mono" style="font-size:22px;color:var(--warn);margin-left:8px">${money(BILLTOTAL-BILLPAID)}</b></span>
+          </div>
+          <div style="display:flex;gap:10px"><button class="w-btn sec">Cancel</button><button class="w-btn">Save bill</button></div>
+        </div>
+      </main>
+    </div>`;
+  },
+
+  customer() {
+    const rows = STATEMENT.map(s => `
+      <tr>
+        <td class="w-mono" style="color:var(--muted)">${s.date}</td>
+        <td>${s.detail}</td>
+        <td class="r w-mono">${s.bill ? s.bill.toLocaleString("en-PK") : '<span style="color:var(--faint)">—</span>'}</td>
+        <td class="r w-mono">${s.paid ? s.paid.toLocaleString("en-PK") : '<span style="color:var(--faint)">—</span>'}</td>
+        <td class="r w-mono" style="font-weight:600">${s.bal.toLocaleString("en-PK")}</td>
+      </tr>`).join("");
+
+    const rail = this.rail(`
+      <div class="w-railblock">
+        <h3>Outstanding</h3>
+        <div class="fig w-mono" style="font-size:30px;font-weight:600;letter-spacing:-0.01em">${money(148600)}</div>
+        <div style="font-size:13px;color:var(--warn);margin-top:4px">Oldest invoice 34 days</div>
+        <button class="w-btn" style="width:100%;margin-top:16px">Record payment</button>
+        <button class="w-btn sec" style="width:100%;margin-top:8px">Send reminder</button>
+      </div>
+      <div class="w-railblock">
+        <h3>Details</h3>
+        <ul class="w-raillist">
+          <li><span style="color:var(--muted)">Credit limit</span><span class="w-mono">${money(200000)}</span></li>
+          <li><span style="color:var(--muted)">Phone</span><span class="w-mono">0300-2145566</span></li>
+          <li><span style="color:var(--muted)">Bills this month</span><span class="w-mono">6</span></li>
+          <li><span style="color:var(--muted)">Lifetime</span><span class="w-mono">${money(2184900)}</span></li>
+        </ul>
+      </div>`);
+
+    return `<div class="w-wrap">
+      <div class="w-phead">
+        <div><h1 class="w-h1">Ahmed Traders</h1>
+          <p class="w-psub">Jodia Bazaar, Karachi</p></div>
+        <button class="w-btn sec">Edit customer</button>
+      </div>
+      <main class="w-panel">
+        <div class="w-panelhead"><h2>Running statement</h2>
+          <button class="w-btn sec sm">Print statement</button></div>
+        <table class="w-table">
+          <thead><tr><th>Date</th><th>Detail</th><th class="r">Bill</th><th class="r">Paid</th><th class="r">Balance</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </main>
+      ${rail}
+    </div>`;
+  },
+};
+
+/* ═════════════════════════════════════════════════════════════════════
+   DIRECTION 3 · CONSOLE — its own markup, top to bottom
+   icon rail / status line / two-pane master-detail / dark
+   ═════════════════════════════════════════════════════════════════════ */
+const Console_ = {
+  shell(screen, panes) {
+    const rail = [
+      ["▦", "Home", "dashboard"], ["≡", "Bills", "billing"], ["↺", "Return", null], null,
+      ["◲", "Stock", null], ["⇩", "Purch", null], null,
+      ["₨", "Owed", null], ["◔", "Cust", "customer"], ["✓", "Chq", null], ["◫", "Cash", null], null,
+      ["⚙", "Admin", null],
+    ].map(it => it === null ? `<div class="c-raildiv"></div>`
+      : `<div class="c-railitem ${it[2] === screen || (screen === "newbill" && it[2] === "billing") ? "on" : ""}">
+           <div class="c-railicon">${it[0]}</div><div class="c-raillab">${it[1]}</div></div>`).join("");
+
+    // ONE status line — replaces every metric card in the app
+    const status = `
+      <div class="c-status">
+        <div class="c-statitem">Today <b class="c-mono">${money(177950)}</b></div>
+        <div class="c-statitem">Month <b class="c-mono">${money(1942300)}</b></div>
+        <div class="c-statitem">Owed <b class="c-mono">${money(612400)}</b></div>
+        <div class="c-statitem alert">Overdue <b class="c-mono">${money(184200)}</b></div>
+        <div class="c-statitem alert">Low stock <b class="c-mono">3</b></div>
+        <span class="c-kbd">⌘K  commands</span>
+      </div>`;
+
+    return `<div class="c-app">
+      <nav class="c-rail">${rail}<div class="c-railspacer"></div>
+        <div class="c-railitem"><div class="c-railicon">⇕</div><div class="c-raillab">32px</div></div>
+      </nav>
+      <div class="c-main">${status}<div class="c-panes">${panes}</div></div>
+    </div>`;
+  },
+
+  listpane(title, rows, placeholder) {
+    return `<div class="c-list">
+      <div class="c-listhead">
+        <input class="c-search" placeholder="${placeholder}">
+        <button class="c-btn">New <span class="k">N</span></button>
+      </div>
+      <div class="c-rows">${rows}</div>
+    </div>`;
+  },
+
+  billRows(selNo) {
+    return BILLS.map(b => `
+      <div class="c-row ${b.no === selNo ? "sel" : ""}">
+        <div class="r1"><span class="c-mono">#${b.no}</span><span>${b.cust}</span></div>
+        <div class="r2"><span class="c-mono">${b.date}</span>
+          <span>${b.void ? '<span class="c-pill bad">void</span>'
+            : b.owing > 0 ? `<span class="c-pill warn">${money(b.owing)}</span>`
+            : '<span class="c-pill ok">paid</span>'}
+            <span class="c-mono" style="margin-left:8px;color:var(--text)">${money(b.total)}</span></span></div>
+      </div>`).join("");
+  },
+
+  dashboard() {
+    // no cards at all — the status line IS the dashboard; below it, two stacked lists
+    const low = LOWSTOCK.map(p => `
+      <div class="c-stackrow">
+        <span>${p.name} <span style="color:var(--faint)">${p.spec}</span></span>
+        <span><span class="c-mono">${p.qty}</span> <span class="c-pill bad">min ${p.min}</span></span>
+      </div>`).join("");
+    const debt = DEBTORS.map(d => `
+      <div class="c-stackrow">
+        <span>${d.name}</span>
+        <span><span class="c-mono">${money(d.amt)}</span>
+          ${d.days ? `<span class="c-pill ${d.days > 60 ? "bad" : "warn"}" style="margin-left:8px">${d.days}d</span>` : ""}</span>
+      </div>`).join("");
+    const chq = CHEQUES.map(c => `
+      <div class="c-stackrow">
+        <span class="c-mono">${c.no}</span>
+        <span><span style="color:var(--muted)">${c.bank} · ${c.party}</span>
+          <span class="c-mono" style="margin-left:10px">${money(c.amt)}</span>
+          <span class="c-pill ok" style="margin-left:8px">${c.date}</span></span>
+      </div>`).join("");
+
+    return `<div class="c-detail" style="max-width:900px">
+      <div class="c-eyebrow" style="margin-bottom:10px">Needs attention</div>
+      <div class="c-stacklist">${low}</div>
+      <div class="c-eyebrow" style="margin:24px 0 10px">Top debtors</div>
+      <div class="c-stacklist">${debt}</div>
+      <div class="c-eyebrow" style="margin:24px 0 10px">Cheques due this week</div>
+      <div class="c-stacklist">${chq}</div>
+    </div>`;
+  },
+
+  billing() {
+    const lines = BILLLINES.map(l => `
+      <tr>
+        <td class="c-mono" style="color:var(--muted)">${l.code}</td>
+        <td>${l.name}</td>
+        <td class="r c-mono">${l.qty} ${l.unit}</td>
+        <td class="r c-mono" style="color:var(--muted)">${l.pcs}</td>
+        <td class="r c-mono">${l.rate.toLocaleString("en-PK")}</td>
+        <td class="r c-mono">${l.amt.toLocaleString("en-PK")}</td>
+      </tr>`).join("");
+
+    const detail = `<div class="c-detail">
+      <div class="c-dhead">
+        <span class="c-dnum c-mono">#1042</span>
+        <span class="c-pill warn">${money(18600)} owing</span>
+        <span class="c-dspacer"></span>
+        <button class="c-btn sec">Invoice <span class="k">P</span></button>
+        <button class="c-btn sec" style="margin-left:6px">Challan</button>
+        <button class="c-btn sec" style="margin-left:6px">Edit <span class="k">E</span></button>
+        <button class="c-btn danger" style="margin-left:6px">Void</button>
+      </div>
+      <div class="c-kv">
+        <div><div class="c-eyebrow">Customer</div><div class="v">Ahmed Traders</div></div>
+        <div><div class="c-eyebrow">Date</div><div class="v c-mono">15 Aug 2026</div></div>
+        <div><div class="c-eyebrow">Paid now</div><div class="v c-mono">${money(BILLPAID)}</div></div>
+        <div><div class="c-eyebrow">Balance after</div><div class="v c-mono">${money(148600)}</div></div>
+      </div>
+      <table class="c-table">
+        <thead><tr><th>Code</th><th>Product</th><th class="r">Qty</th><th class="r">Pcs</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead>
+        <tbody>${lines}</tbody>
+      </table>
+      <div class="c-totals c-mono">
+        <div><span style="color:var(--muted)">Subtotal</span><span>${BILLTOTAL.toLocaleString("en-PK")}</span></div>
+        <div><span style="color:var(--muted)">Paid — cash</span><span>${BILLPAID.toLocaleString("en-PK")}</span></div>
+        <div class="grand"><span>On udhaar</span><span style="color:var(--warn)">${(BILLTOTAL-BILLPAID).toLocaleString("en-PK")}</span></div>
+      </div>
+    </div>`;
+
+    return this.listpane("Bills", this.billRows(1042), "Search bills   /") + detail;
+  },
+
+  newbill() {
+    const lines = BILLLINES.map(l => `
+      <tr>
+        <td class="c-mono" style="color:var(--muted)">${l.code}</td>
+        <td>${l.name}</td>
+        <td class="r"><input class="c-input c-mono" style="width:56px;text-align:right" value="${l.qty}"></td>
+        <td class="r"><input class="c-input c-mono" style="width:80px;text-align:right" value="${l.rate}"></td>
+        <td class="r c-mono">${l.amt.toLocaleString("en-PK")}</td>
+      </tr>`).join("");
+
+    const detail = `<div class="c-detail">
+      <div class="c-dhead">
+        <span class="c-dnum c-mono">#1043</span>
+        <span class="c-pill mute">draft</span>
+        <span class="c-dspacer"></span>
+        <button class="c-btn sec">Cancel <span class="k">esc</span></button>
+        <button class="c-btn" style="margin-left:6px">Save <span class="k">⌘S</span></button>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div class="c-field" style="width:260px"><label>Customer</label>
+          <select class="c-input"><option>Ahmed Traders</option><option>Cash customer</option></select></div>
+        <div class="c-field" style="width:160px"><label>Bill date</label>
+          <input class="c-input c-mono" type="date" value="2026-08-15"></div>
+      </div>
+      <div class="c-eyebrow" style="margin:6px 0 8px">Items</div>
+      <table class="c-table">
+        <thead><tr><th>Code</th><th>Product</th><th class="r">Qty</th><th class="r">Rate</th><th class="r">Amount</th></tr></thead>
+        <tbody>${lines}</tbody>
+      </table>
+      <div style="display:flex;gap:8px;margin-top:12px">
+        <input class="c-input" style="flex:1;max-width:380px" placeholder="Add product — type code or name…">
+        <span class="c-kbd" style="align-self:center">⏎ to add</span>
+      </div>
+      <div class="c-totals c-mono">
+        <div><span style="color:var(--muted)">Bill total</span><span>${BILLTOTAL.toLocaleString("en-PK")}</span></div>
+        <div><span style="color:var(--muted)">Paying now</span><span>${BILLPAID.toLocaleString("en-PK")}</span></div>
+        <div class="grand"><span>On udhaar</span><span style="color:var(--warn)">${(BILLTOTAL-BILLPAID).toLocaleString("en-PK")}</span></div>
+      </div>
+    </div>`;
+
+    // the list pane stays mounted — you build a bill while still seeing the last ten
+    return this.listpane("Bills", this.billRows(null), "Search bills   /") + detail;
+  },
+
+  customer() {
+    const rows = DEBTORS.map((d, i) => `
+      <div class="c-row ${i === 1 ? "sel" : ""}">
+        <div class="r1"><span>${d.name}</span><span class="c-mono">${money(d.amt)}</span></div>
+        <div class="r2"><span>${d.days ? d.days + " days oldest" : "current"}</span>
+          <span>${d.days && d.days > 60 ? '<span class="c-pill bad">overdue</span>'
+            : d.days ? '<span class="c-pill warn">watch</span>' : '<span class="c-pill ok">ok</span>'}</span></div>
+      </div>`).join("");
+
+    const st = STATEMENT.map(s => `
+      <tr>
+        <td class="c-mono" style="color:var(--muted)">${s.date}</td>
+        <td>${s.detail}</td>
+        <td class="r c-mono">${s.bill ? s.bill.toLocaleString("en-PK") : '<span style="color:var(--faint)">—</span>'}</td>
+        <td class="r c-mono">${s.paid ? s.paid.toLocaleString("en-PK") : '<span style="color:var(--faint)">—</span>'}</td>
+        <td class="r c-mono">${s.bal.toLocaleString("en-PK")}</td>
+      </tr>`).join("");
+
+    const detail = `<div class="c-detail">
+      <div class="c-dhead">
+        <span class="c-dnum">Ahmed Traders</span>
+        <span class="c-pill warn">34d</span>
+        <span class="c-dspacer"></span>
+        <button class="c-btn">Record payment <span class="k">R</span></button>
+        <button class="c-btn sec" style="margin-left:6px">Statement</button>
+      </div>
+      <div class="c-kv">
+        <div><div class="c-eyebrow">Outstanding</div><div class="v c-mono" style="font-size:18px">${money(148600)}</div></div>
+        <div><div class="c-eyebrow">Credit limit</div><div class="v c-mono">${money(200000)}</div></div>
+        <div><div class="c-eyebrow">Phone</div><div class="v c-mono">0300-2145566</div></div>
+        <div><div class="c-eyebrow">Lifetime</div><div class="v c-mono">${money(2184900)}</div></div>
+      </div>
+      <div class="c-eyebrow" style="margin-bottom:8px">Running statement</div>
+      <table class="c-table">
+        <thead><tr><th>Date</th><th>Detail</th><th class="r">Bill</th><th class="r">Paid</th><th class="r">Balance</th></tr></thead>
+        <tbody>${st}</tbody>
+      </table>
+    </div>`;
+
+    return this.listpane("Customers", rows, "Search customers   /") + detail;
+  },
+};
+
+/* ═════════════ WIRING ═════════════ */
+const DIRS = {
+  ledger: {
+    label: "Ledger",
+    blurb: `<b>Ledger</b> — grouped sidebar · one hero figure on an inline strip · <b>no cards anywhere</b> · 36px rows, flat hairline tables. Cool paper, navy accent, IBM Plex Mono for every figure. <span class="cost">Cost: the densest and least welcoming of the three; a new staff member gets less hand-holding.</span>`,
+    render: (s) => Ledger.shell(s, Ledger[s]()),
+  },
+  workshop: {
+    label: "Workshop",
+    blurb: `<b>Workshop</b> — top bar + section tabs · metrics <b>demoted to a right rail</b> · rows <b>grouped under sticky headers with running totals</b> · warm oat ground, white panels, 44px rows, 15px base type. <span class="cost">Cost: ~20% fewer rows on screen than Ledger, and the rail eats 300px.</span>`,
+    render: (s) => Workshop.shell(s, Workshop[s]()),
+  },
+  console: {
+    label: "Console",
+    blurb: `<b>Console</b> — icon rail · <b>no metric cards at all</b>, one status line · <b>two-pane master/detail</b> so viewing a bill never navigates away · dark, 32px rows, keyboard-first. <span class="cost">Cost: dark is worse in a sunlit shop, print pages stay white (jarring switch), and 28px controls assume a mouse — not a touchscreen.</span>`,
+    render: (s) => Console_.shell(s, Console_[s]()),
+  },
+};
+const SCREENS = [
+  ["billing",   "Billing list"],
+  ["newbill",   "New bill (form)"],
+  ["customer",  "Customer ledger"],
+  ["dashboard", "Dashboard"],
+];
+
+let dir = "workshop", screen = "billing";
+let GROUPBY = "date";                      // Workshop billing group-by, user-switchable
+function setGroup(g) { GROUPBY = g; paint(); }
+
+function paint() {
+  document.querySelectorAll("#dirTabs .tab").forEach(b => b.setAttribute("aria-selected", b.dataset.k === dir));
+  document.querySelectorAll("#screenTabs .tab").forEach(b => b.setAttribute("aria-selected", b.dataset.k === screen));
+  document.getElementById("blurb").innerHTML = DIRS[dir].blurb;
+  document.getElementById("stage").innerHTML = DIRS[dir].render(screen);
+}
+
+const dt = document.getElementById("dirTabs");
+Object.entries(DIRS).forEach(([k, v]) => {
+  const b = document.createElement("button");
+  b.className = "tab"; b.dataset.k = k; b.textContent = v.label; b.setAttribute("role", "tab");
+  b.onclick = () => { dir = k; paint(); };
+  dt.appendChild(b);
+});
+const st = document.getElementById("screenTabs");
+SCREENS.forEach(([k, label]) => {
+  const b = document.createElement("button");
+  b.className = "tab"; b.dataset.k = k; b.textContent = label; b.setAttribute("role", "tab");
+  b.onclick = () => { screen = k; paint(); };
+  st.appendChild(b);
+});
+
+paint();
+</script>
+</body>
+</html>

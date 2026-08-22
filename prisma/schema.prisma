@@ -1,0 +1,535 @@
+// Inventory, Billing & Accounts System — data model
+// Scope source of truth: Project/software/Feature-Specification.docx (features 1-34)
+// Money is stored in integer PAISA (1 PKR = 100 paisa) to avoid float drift.
+// Stock is stored internally in PIECES; box/carton are conversions (spec feature 3).
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------------------------------------------------------------------------
+// Users & access (spec feature 30)
+// ---------------------------------------------------------------------------
+
+enum Role {
+  OWNER
+  STAFF
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  username     String   @unique
+  passwordHash String
+  role         Role     @default(STAFF)
+  active       Boolean  @default(true) // deactivate instead of deleting (keeps audit history)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  auditLogs AuditLog[]
+}
+
+// Who did what (improvement 10): staff accountability for money/stock actions.
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  username  String // kept denormalised so history survives user deletion
+  action    String // e.g. INVOICE_VOID, STOCK_ADJUST, PASSWORD_CHANGE
+  entity    String // Invoice, Product, Customer ...
+  entityId  String?
+  summary   String // human-readable line for the owner
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action])
+}
+
+// ---------------------------------------------------------------------------
+// Products & inventory (spec features 1-6)
+// ---------------------------------------------------------------------------
+
+model Product {
+  id              String   @id @default(cuid())
+  code            String   @unique // auto-generated (feature 2)
+  name            String
+  size            String? // e.g. 4-inch (feature 1)
+  variant         String? // brand/thickness etc. (feature 1)
+  // unit conversions (feature 3) — pieces per higher unit; 0 = not sold in that unit
+  piecesPerBox    Int      @default(1)
+  piecesPerCarton Int      @default(0)
+  minStockLevel   Int      @default(0) // low-stock threshold (feature 5)
+  // latest-cost method (feature 9): most recent landed per-piece cost, in paisa
+  latestCostPaisa Int      @default(0)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  movements       StockMovement[]
+  invoiceItems    InvoiceItem[]
+  purchaseItems   PurchaseItem[]
+  lastPrices      CustomerProductPrice[]
+  creditNoteItems CreditNoteItem[]
+
+  @@index([name])
+}
+
+enum MovementType {
+  PURCHASE_IN // stock arrives (feature 7)
+  SALE_OUT // sold on a bill (feature 4)
+  RETURN_IN // customer return back into stock (feature 6)
+  SAMPLE_OUT // free sample / bonus (feature 18)
+  ADJUST // manual correction / first stock count (feature 34 note)
+}
+
+model StockMovement {
+  id            String       @id @default(cuid())
+  productId     String
+  product       Product      @relation(fields: [productId], references: [id])
+  type          MovementType
+  // signed piece delta: positive = into stock, negative = out of stock
+  piecesDelta   Int
+  // per-piece cost captured at movement time (paisa) — keeps profit honest on samples/returns
+  unitCostPaisa Int          @default(0)
+  reason        String?
+  // optional links back to the source document
+  invoiceId     String?
+  invoice       Invoice?     @relation(fields: [invoiceId], references: [id])
+  purchaseId    String?
+  purchase      Purchase?    @relation(fields: [purchaseId], references: [id])
+  creditNoteId  String?
+  creditNote    CreditNote?  @relation(fields: [creditNoteId], references: [id])
+  createdAt     DateTime     @default(now())
+
+  @@index([productId])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Purchasing & suppliers (spec features 7-10)
+// ---------------------------------------------------------------------------
+
+model Supplier {
+  id        String   @id @default(cuid())
+  name      String
+  phone     String?
+  notes     String?
+  // Hide a supplier who has purchases/ledger history instead of deleting
+  // (keeps payables and landed-cost history intact). Same pattern as Customer.
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  purchases     Purchase[]
+  ledgerEntries SupplierLedgerEntry[]
+}
+
+model Purchase {
+  id             String    @id @default(cuid())
+  // Human purchase no. ("Purchase #14") — the id is unreadable, and supplier +
+  // date alone can't tell two purchases apart. Same idea as Invoice.number.
+  number         Int       @unique @default(autoincrement())
+  supplierId     String?
+  supplier       Supplier? @relation(fields: [supplierId], references: [id])
+  date           DateTime  @default(now())
+  isImport       Boolean   @default(false) // true = landed-cost applies (feature 8)
+  onCredit       Boolean   @default(false) // true = posts to supplier payable (feature 10)
+  // landed-cost extras for imports (paisa), spread across items (feature 8)
+  freightPaisa   Int       @default(0)
+  dutyPaisa      Int       @default(0)
+  clearingPaisa  Int       @default(0)
+  transportPaisa Int       @default(0)
+  notes          String?
+  createdAt      DateTime  @default(now())
+
+  items         PurchaseItem[]
+  movements     StockMovement[]
+  ledgerEntries SupplierLedgerEntry[]
+
+  @@index([supplierId])
+}
+
+model PurchaseItem {
+  id                    String   @id @default(cuid())
+  purchaseId            String
+  purchase              Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  productId             String
+  product               Product  @relation(fields: [productId], references: [id])
+  pieces                Int // quantity received, in pieces
+  supplierUnitCostPaisa Int // supplier price per piece before landed extras
+  landedUnitCostPaisa   Int // final per-piece cost incl. allocated extras (feature 8)
+
+  @@index([purchaseId])
+}
+
+enum LedgerDirection {
+  CHARGE // increases what we owe the supplier
+  PAYMENT // reduces what we owe (feature 10)
+}
+
+model SupplierLedgerEntry {
+  id          String          @id @default(cuid())
+  supplierId  String
+  supplier    Supplier        @relation(fields: [supplierId], references: [id])
+  direction   LedgerDirection
+  amountPaisa Int
+  note        String?
+  date        DateTime        @default(now())
+  // Set on CHARGE rows raised by a credit purchase, so editing or deleting that
+  // purchase can find and reverse its payable exactly (no note-string matching).
+  // Legacy rows created before this column are matched on the note as a fallback.
+  purchaseId  String?
+  purchase    Purchase?       @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+
+  @@index([supplierId])
+  @@index([purchaseId])
+}
+
+// ---------------------------------------------------------------------------
+// Customers & receivables / udhaar (spec features 12, 19-22)
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id                  String   @id @default(cuid())
+  name                String
+  phone               String?
+  openingBalancePaisa Int      @default(0) // day-one udhaar carried in (feature 20)
+  // Credit control (improvement 7): 0 = no limit. Warns when the balance would exceed it.
+  creditLimitPaisa    Int      @default(0)
+  isCashCustomer      Boolean  @default(false) // the singleton "Cash Sale" walk-in (feature 12)
+  // Hide a customer who has history instead of deleting (keeps their bills intact).
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  invoices    Invoice[]
+  payments    Payment[]
+  lastPrices  CustomerProductPrice[]
+  creditNotes CreditNote[]
+
+  @@index([name])
+}
+
+// Remembers the last rate sold to a customer for a product (feature 14)
+model CustomerProductPrice {
+  id            String   @id @default(cuid())
+  customerId    String
+  customer      Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  lastRatePaisa Int // per selling-unit rate last used
+  lastUnit      SaleUnit
+  updatedAt     DateTime @updatedAt
+
+  @@unique([customerId, productId])
+}
+
+// ---------------------------------------------------------------------------
+// Billing & sales (spec features 11-18)
+// ---------------------------------------------------------------------------
+
+enum SaleUnit {
+  PIECE
+  BOX
+  CARTON
+}
+
+enum PaymentMethod {
+  CASH
+  CHEQUE
+  ONLINE
+  UDHAAR // put on the customer's account to pay later (feature 16)
+}
+
+enum InvoiceStatus {
+  ACTIVE
+  VOIDED // corrected/cancelled (improvement 2) — number kept for audit
+}
+
+model Invoice {
+  id          String        @id @default(cuid())
+  number      Int           @unique @default(autoincrement()) // human invoice no.
+  customerId  String
+  customer    Customer      @relation(fields: [customerId], references: [id])
+  date        DateTime      @default(now())
+  // `method` is the PRIMARY method shown on the bill. Actual amounts received live in
+  // `payments` so a bill can be split (improvement 6). UDHAAR = nothing received now.
+  method      PaymentMethod @default(CASH)
+  status      InvoiceStatus @default(ACTIVE)
+  voidedAt    DateTime?
+  voidedById  String?
+  voidReason  String?
+  notes       String?
+  createdById String?
+  createdAt   DateTime      @default(now())
+
+  items       InvoiceItem[]
+  movements   StockMovement[]
+  payments    InvoicePayment[]
+  creditNotes CreditNote[]
+
+  @@index([customerId])
+  @@index([date])
+  @@index([status])
+  // The receivables/aging/reports queries always filter on both at once.
+  @@index([status, date])
+  @@index([customerId, status])
+}
+
+// Money actually received against a bill at billing time. Multiple rows = split payment
+// (e.g. part cash, rest on udhaar) — improvement 6.
+model InvoicePayment {
+  id          String        @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  method      PaymentMethod
+  amountPaisa Int
+  chequeId    String?       @unique
+  cheque      Cheque?       @relation(fields: [chequeId], references: [id])
+  createdAt   DateTime      @default(now())
+
+  @@index([invoiceId])
+}
+
+model InvoiceItem {
+  id            String   @id @default(cuid())
+  invoiceId     String
+  invoice       Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+  unit          SaleUnit @default(PIECE)
+  quantity      Int // in the chosen unit
+  pieces        Int // resolved pieces (quantity * conversion) — drives stock & COGS
+  ratePaisa     Int // negotiated per-unit rate (feature 13)
+  // cost per piece captured at sale time for latest-cost profit (feature 9, 28)
+  unitCostPaisa Int      @default(0)
+  isSample      Boolean  @default(false) // free/bonus line (feature 18)
+
+  @@index([invoiceId])
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// Returns / credit notes (improvement 3) — a return restocks goods AND settles
+// the money, either as credit on the customer's account or a cash refund.
+// ---------------------------------------------------------------------------
+
+enum RefundMethod {
+  CREDIT_TO_ACCOUNT // reduces what the customer owes
+  CASH_REFUND // money paid back out of the cash drawer
+}
+
+model CreditNote {
+  id           String       @id @default(cuid())
+  number       Int          @unique @default(autoincrement())
+  customerId   String
+  customer     Customer     @relation(fields: [customerId], references: [id])
+  invoiceId    String? // the bill being returned against (optional)
+  invoice      Invoice?     @relation(fields: [invoiceId], references: [id])
+  date         DateTime     @default(now())
+  refundMethod RefundMethod @default(CREDIT_TO_ACCOUNT)
+  reason       String?
+  createdById  String?
+  createdAt    DateTime     @default(now())
+
+  items     CreditNoteItem[]
+  movements StockMovement[]
+
+  @@index([customerId])
+  @@index([date])
+  @@index([customerId, refundMethod])
+}
+
+model CreditNoteItem {
+  id            String     @id @default(cuid())
+  creditNoteId  String
+  creditNote    CreditNote @relation(fields: [creditNoteId], references: [id], onDelete: Cascade)
+  productId     String
+  product       Product    @relation(fields: [productId], references: [id])
+  unit          SaleUnit   @default(PIECE)
+  quantity      Int
+  pieces        Int
+  ratePaisa     Int // credited per unit
+  unitCostPaisa Int        @default(0) // cost restored to stock
+
+  @@index([creditNoteId])
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// Payments / receivables (spec feature 21)
+// ---------------------------------------------------------------------------
+
+model Payment {
+  id          String        @id @default(cuid())
+  customerId  String
+  customer    Customer      @relation(fields: [customerId], references: [id])
+  amountPaisa Int // lump-sum against balance (feature 21)
+  method      PaymentMethod @default(CASH)
+  chequeId    String?       @unique
+  cheque      Cheque?       @relation(fields: [chequeId], references: [id])
+  note        String?
+  date        DateTime      @default(now())
+
+  @@index([customerId])
+}
+
+// ---------------------------------------------------------------------------
+// Cheques, cash & bank (spec features 23-25)
+// ---------------------------------------------------------------------------
+
+enum ChequeDirection {
+  RECEIVED // cheque we received (inflow when cleared)
+  ISSUED // cheque we wrote (outflow when cleared)
+}
+
+enum ChequeStatus {
+  PENDING
+  CLEARED
+  BOUNCED
+}
+
+model Cheque {
+  id          String          @id @default(cuid())
+  number      String
+  bank        String
+  amountPaisa Int
+  chequeDate  DateTime
+  direction   ChequeDirection
+  status      ChequeStatus    @default(PENDING)
+  partyName   String? // who it's from/to
+  clearedAt   DateTime?
+  createdAt   DateTime        @default(now())
+
+  payment        Payment?
+  invoicePayment InvoicePayment?
+
+  @@index([status])
+}
+
+enum AccountKind {
+  CASH // cash in hand (feature 24)
+  BANK // bank account (feature 24)
+}
+
+model MoneyAccount {
+  id        String      @id @default(cuid())
+  name      String
+  kind      AccountKind
+  createdAt DateTime    @default(now())
+
+  movements MoneyMovement[]
+}
+
+enum MoneyMovementType {
+  SALE_RECEIPT
+  CUSTOMER_PAYMENT
+  SUPPLIER_PAYMENT
+  EXPENSE
+  DRAWING // owner withdrawal (feature 25)
+  CHEQUE_CLEAR
+  TRANSFER
+  ADJUST
+  REFUND // cash paid back on a return / credit note (improvement 3)
+  VOID_REVERSAL // money undone when a bill is voided (improvement 2)
+}
+
+model MoneyMovement {
+  id          String            @id @default(cuid())
+  accountId   String
+  account     MoneyAccount      @relation(fields: [accountId], references: [id])
+  type        MoneyMovementType
+  // signed: positive = money in, negative = money out
+  amountPaisa Int
+  note        String?
+  date        DateTime          @default(now())
+
+  @@index([accountId])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Expenses (spec feature 26)
+// ---------------------------------------------------------------------------
+
+model Expense {
+  id          String   @id @default(cuid())
+  category    String // electricity, water, labour, transport, salaries, ...
+  amountPaisa Int
+  note        String?
+  date        DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  @@index([category])
+  @@index([date])
+}
+
+// ---------------------------------------------------------------------------
+// Business identity & letterhead (client request)
+// ---------------------------------------------------------------------------
+// One row, id "default". The name/address/phone used to be hardcoded in
+// src/lib/business.ts, which meant a code change every time the shop's details
+// changed. The letterhead image lives here as bytes rather than on disk: Vercel's
+// filesystem is ephemeral, so an uploaded file would vanish on the next deploy.
+// It also means the letterhead is covered by the database backup.
+
+enum LetterheadMode {
+  NONE // plain header drawn by the app, as before
+  IMAGE // print the uploaded artwork onto blank paper
+  PREPRINTED // shop's own letterhead pads — print nothing, just reserve the space
+}
+
+model BusinessSettings {
+  id      String  @id @default("default")
+  name    String  @default("Shabbir Tools")
+  tagline String?
+  address String?
+  phone   String?
+
+  mode LetterheadMode @default(NONE)
+
+  // The artwork, sized for a full A4 page. Null until something is uploaded —
+  // `mode` can still be IMAGE with no image, which simply falls back to NONE.
+  letterheadImage     Bytes?
+  letterheadMime      String?
+  letterheadName      String? // original filename, so the owner recognises it
+  letterheadUpdatedAt DateTime?
+
+  // Where the document's text sits on the page, in millimetres. These exist so
+  // the owner can nudge the content clear of the artwork without a code change —
+  // every letterhead puts its logo and footer in a different place.
+  // Where to print the document's date, when the letterhead carries its own
+  // "Date: ____" rule. Null = the letterhead has no such field, and the document
+  // prints its date in its own header as before. Detected from the PDF on upload.
+  dateFieldXMm Int?
+  dateFieldYMm Int?
+
+  marginTopMm    Int @default(16)
+  marginBottomMm Int @default(16)
+  marginSideMm   Int @default(16)
+
+  updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Expense heads the shop adds itself (client request)
+// ---------------------------------------------------------------------------
+// The seven built-in heads live in code (src/lib/expense-categories.ts) so a
+// fresh install works with no setup. This table holds the ones the owner adds
+// on top. `Expense.category` deliberately stays a plain string rather than a
+// foreign key: an expense records the head it was filed under at the time, so
+// renaming or retiring a head later never rewrites last year's books.
+
+model ExpenseHead {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  // Retired rather than deleted once expenses have been filed under it, the
+  // same delete-or-hide rule Products, Customers and Suppliers follow.
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}

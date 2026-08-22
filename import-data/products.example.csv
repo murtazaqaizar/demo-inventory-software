@@ -1,0 +1,4 @@
+name,size,variant,pieces_per_box,pieces_per_carton,min_stock,opening_stock,cost_rs
+Cutting Disc,4 inch,1.0mm - Brand A,25,200,50,300,45
+Grinding Disc,4 inch,6.0mm - Brand B,10,100,20,120,90
+Flap Disc,4 inch,80 grit,12,144,30,60,55
