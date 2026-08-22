@@ -146,7 +146,7 @@ Prose caps at **72 characters**.
 
 ## Layout & density
 
-- **Top bar, 56px**, `surface`, bottom hairline. Left: business name + "Wholesale abrasives".
+- **Top bar, 56px**, `surface`, bottom hairline. Left: business name + its tagline.
   Centre: four sections — **Sell · Stock · Money · Admin**. Right: user name + role.
 - **Tab row** beneath the top bar holds the active section's pages, so the 14 destinations are
   never all visible at once. Map:

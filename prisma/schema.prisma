@@ -486,7 +486,7 @@ enum LetterheadMode {
 
 model BusinessSettings {
   id      String  @id @default("default")
-  name    String  @default("Shabbir Tools")
+  name    String  @default("Demo Traders")
   tagline String?
   address String?
   phone   String?

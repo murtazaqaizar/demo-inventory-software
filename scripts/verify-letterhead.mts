@@ -48,7 +48,7 @@ function check(label: string, actual: unknown, expected: unknown) {
 
 type Settings = Parameters<typeof drawsArtwork>[0];
 const base: Settings = {
-  name: "Shabbir Tools",
+  name: "Demo Traders",
   tagline: null,
   address: null,
   phone: null,

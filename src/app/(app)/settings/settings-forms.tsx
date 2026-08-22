@@ -103,7 +103,7 @@ export function SettingsForms({ settings }: { settings: BusinessSettings }) {
               id="tagline"
               name="tagline"
               defaultValue={settings.tagline ?? ""}
-              placeholder="Abrasives, cutting and grinding discs"
+              placeholder="Hardware, tools and industrial supplies"
             />
           </div>
           <div className="sm:col-span-2">

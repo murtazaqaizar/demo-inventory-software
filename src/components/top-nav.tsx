@@ -38,7 +38,7 @@ export function TopNav({
             Inventory &amp; Accounts
           </span>
           <span className="block text-[12px] font-normal tracking-normal text-ink-faint">
-            Wholesale abrasives
+            Hardware · Tools · Industrial Supplies
           </span>
         </Link>
 

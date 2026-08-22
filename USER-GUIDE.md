@@ -1,4 +1,4 @@
-# Shabbir Tools — Inventory, Billing & Accounts
+# Demo Traders — Inventory, Billing & Accounts
 ## Complete User Guide
 
 This guide explains everything the system does and exactly how to use it, step by step.
@@ -480,4 +480,4 @@ Yes. The Owner and Staff can both be logged in on different devices at the same 
 
 ---
 
-*Shabbir Tools — Inventory, Billing & Accounts. For support, contact your developer.*
+*Demo Traders — Inventory, Billing & Accounts. For support, contact your developer.*

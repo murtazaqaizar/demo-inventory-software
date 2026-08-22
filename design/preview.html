@@ -390,7 +390,7 @@ const Ledger = {
     `).join("");
     return `<div class="l-app">
       <aside class="l-side">
-        <div class="l-brand"><b>Inventory &amp; Accounts</b><span>Wholesale abrasives</span></div>
+        <div class="l-brand"><b>Inventory &amp; Accounts</b><span>Hardware · Tools · Industrial Supplies</span></div>
         <nav class="l-nav">${nav}</nav>
         <div class="l-userbar">Murtaza · <b style="font-weight:500">OWNER</b></div>
       </aside>
@@ -595,7 +595,7 @@ const Workshop = {
     const onTab = { dashboard: "Dashboard", billing: "Billing", newbill: "Billing", customer: "Customers" }[screen];
     return `<div class="w-app">
       <header class="w-top">
-        <div class="w-logo">Inventory &amp; Accounts<span>Wholesale abrasives</span></div>
+        <div class="w-logo">Inventory &amp; Accounts<span>Hardware · Tools · Industrial Supplies</span></div>
         <nav class="w-sections">${sections.map(s => `<a href="#" class="${s === active ? "on" : ""}">${s}</a>`).join("")}</nav>
         <div class="w-who">Murtaza · OWNER</div>
       </header>

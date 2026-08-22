@@ -36,7 +36,7 @@ export default async function LoginPage({
             Inventory &amp; Accounts
           </h1>
           <p className="mt-1 text-[15px] text-ink-muted">
-            Wholesale abrasives · sign in to continue
+            Sign in to continue
           </p>
         </div>
 
