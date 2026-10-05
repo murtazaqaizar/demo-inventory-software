@@ -3,6 +3,7 @@
 import { useActionState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { createProduct, updateProduct, type ActionResult } from "../actions";
+import { CategoryCombobox } from "@/components/category-combobox";
 import { Button, FieldError, Input, Label, Panel, numInputClass } from "@/components/ui";
 
 export type ProductInitial = {
@@ -10,6 +11,7 @@ export type ProductInitial = {
   name: string;
   size: string | null;
   variant: string | null;
+  category: string | null;
   piecesPerBox: number;
   piecesPerCarton: number;
   minStockLevel: number;
@@ -18,9 +20,11 @@ export type ProductInitial = {
 
 export function ProductForm({
   canSeeCost,
+  categories,
   initial,
 }: {
   canSeeCost: boolean;
+  categories: string[];
   initial?: ProductInitial;
 }) {
   const router = useRouter();
@@ -52,6 +56,11 @@ export function ProductForm({
             <Label htmlFor="variant">Variant / brand</Label>
             <Input id="variant" name="variant" placeholder="1.0mm - Brand A" defaultValue={initial?.variant ?? ""} />
           </div>
+        </div>
+
+        <div>
+          <Label htmlFor="category">Category</Label>
+          <CategoryCombobox options={categories} defaultValue={initial?.category ?? ""} />
         </div>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">

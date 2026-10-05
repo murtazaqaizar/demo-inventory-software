@@ -4,7 +4,7 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { safeAction } from "@/lib/action-errors";
-import { nextProductCode } from "@/lib/products";
+import { nextProductCode, resolveCategory } from "@/lib/products";
 import { requireUserApi, requireOwnerApi } from "@/lib/guards";
 import { rupeesToPaisa } from "@/lib/money";
 import { audit } from "@/lib/audit";
@@ -13,6 +13,7 @@ const productSchema = z.object({
   name: z.string().min(1, "Name is required"),
   size: z.string().optional(),
   variant: z.string().optional(),
+  category: z.string().optional(),
   piecesPerBox: z.coerce.number().int().min(1).default(1),
   piecesPerCarton: z.coerce.number().int().min(0).default(0),
   minStockLevel: z.coerce.number().int().min(0).default(0),
@@ -38,6 +39,7 @@ export async function createProduct(formData: FormData): Promise<ActionResult> {
         name: d.name,
         size: d.size || null,
         variant: d.variant || null,
+        category: await resolveCategory(d.category),
         piecesPerBox: d.piecesPerBox,
         piecesPerCarton: d.piecesPerCarton,
         minStockLevel: d.minStockLevel,
@@ -153,6 +155,7 @@ const editSchema = z.object({
   name: z.string().min(1, "Name is required"),
   size: z.string().optional(),
   variant: z.string().optional(),
+  category: z.string().optional(),
   piecesPerBox: z.coerce.number().int().min(1).default(1),
   piecesPerCarton: z.coerce.number().int().min(0).default(0),
   minStockLevel: z.coerce.number().int().min(0).default(0),
@@ -175,6 +178,7 @@ export async function updateProduct(formData: FormData): Promise<ActionResult> {
         name: d.name,
         size: d.size || null,
         variant: d.variant || null,
+        category: await resolveCategory(d.category),
         piecesPerBox: d.piecesPerBox,
         piecesPerCarton: d.piecesPerCarton,
         minStockLevel: d.minStockLevel,

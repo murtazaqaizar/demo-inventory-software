@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { getStockMap } from "@/lib/stock";
 import { formatPKR } from "@/lib/money";
+import { listCategories } from "@/lib/products";
 import {
   Badge,
   Button,
@@ -24,11 +25,12 @@ import { deleteProduct } from "./actions";
 import type { Prisma } from "@/generated/prisma/client";
 
 const PAGE_SIZE = 30;
+const NO_CATEGORY = "none";
 
 export default async function ProductsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ q?: string; page?: string; low?: string }>;
+  searchParams: Promise<{ q?: string; page?: string; low?: string; category?: string }>;
 }) {
   const user = await requireUser();
   const owner = user.role === "OWNER";
@@ -42,10 +44,15 @@ export default async function ProductsPage({
       { code: { contains: sp.q, mode: "insensitive" } },
       { size: { contains: sp.q, mode: "insensitive" } },
       { variant: { contains: sp.q, mode: "insensitive" } },
+      { category: { contains: sp.q, mode: "insensitive" } },
     ];
   }
+  // ?category=<tag> filters to one category; ?category=none = products without one.
+  if (sp.category === NO_CATEGORY) where.category = null;
+  else if (sp.category) where.category = sp.category;
 
-  const [products, total] = await Promise.all([
+  const [categories, products, total] = await Promise.all([
+    listCategories(),
     prisma.product.findMany({
       where,
       orderBy: { code: "asc" },
@@ -55,6 +62,20 @@ export default async function ProductsPage({
     prisma.product.count({ where }),
   ]);
   const stock = await getStockMap(products.map((p) => p.id));
+
+  const tagHref = (category?: string) => {
+    const qs = new URLSearchParams();
+    if (sp.q) qs.set("q", sp.q);
+    if (category) qs.set("category", category);
+    const query = qs.toString();
+    return query ? `/products?${query}` : "/products";
+  };
+  const tagClass = (on: boolean) =>
+    `inline-flex h-8 items-center rounded-full border px-3.5 text-[13px] font-medium transition-colors duration-150 ${
+      on
+        ? "border-accent bg-accent-soft text-ink"
+        : "border-line bg-surface text-ink-muted hover:bg-surface-alt"
+    }`;
 
   return (
     <div>
@@ -72,8 +93,27 @@ export default async function ProductsPage({
         <SearchBar
           action="/products"
           q={sp.q}
-          placeholder="Search name, code, size or brand"
-        />
+          placeholder="Search name, code, size, brand or category"
+        >
+          {sp.category && <input type="hidden" name="category" value={sp.category} />}
+        </SearchBar>
+
+        {categories.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3 md:px-6">
+            <span className="mr-1 text-[13px] font-medium text-ink-muted">Category</span>
+            <Link href={tagHref()} className={tagClass(!sp.category)}>
+              All
+            </Link>
+            {categories.map((c) => (
+              <Link key={c} href={tagHref(c)} className={tagClass(sp.category === c)}>
+                {c}
+              </Link>
+            ))}
+            <Link href={tagHref(NO_CATEGORY)} className={tagClass(sp.category === NO_CATEGORY)}>
+              Uncategorised
+            </Link>
+          </div>
+        )}
 
         {products.length === 0 ? (
           <EmptyState>
@@ -113,6 +153,11 @@ export default async function ProductsPage({
                           <div className="text-[13px] text-ink-muted">
                             {[p.size, p.variant].filter(Boolean).join(" · ")}
                           </div>
+                          {p.category && (
+                            <div className="mt-1">
+                              <Badge>{p.category}</Badge>
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td
@@ -160,7 +205,7 @@ export default async function ProductsPage({
         page={page}
         pageSize={PAGE_SIZE}
         total={total}
-        params={{ q: sp.q }}
+        params={{ q: sp.q, category: sp.category }}
       />
     </div>
   );

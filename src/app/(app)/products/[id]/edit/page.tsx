@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
+import { listCategories } from "@/lib/products";
 import { PageHeader } from "@/components/ui";
 import { ProductForm } from "../../new/product-form";
 
@@ -12,7 +13,10 @@ export default async function EditProductPage({
   const user = await requireUser();
   const { id } = await params;
 
-  const product = await prisma.product.findUnique({ where: { id } });
+  const [product, categories] = await Promise.all([
+    prisma.product.findUnique({ where: { id } }),
+    listCategories(),
+  ]);
   if (!product) notFound();
 
   return (
@@ -20,11 +24,13 @@ export default async function EditProductPage({
       <PageHeader title={`Edit ${product.code}`} description="Change this product's details." />
       <ProductForm
         canSeeCost={user.role === "OWNER"}
+        categories={categories}
         initial={{
           id: product.id,
           name: product.name,
           size: product.size,
           variant: product.variant,
+          category: product.category,
           piecesPerBox: product.piecesPerBox,
           piecesPerCarton: product.piecesPerCarton,
           minStockLevel: product.minStockLevel,

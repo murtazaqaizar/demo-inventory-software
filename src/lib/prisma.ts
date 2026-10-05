@@ -36,6 +36,11 @@ function createClient() {
   // verification (connection is still TLS-encrypted). Safe for Supabase's managed CA.
   const adapter = new PrismaPg({
     connectionString: url,
+    // Each Vercel instance keeps its own pool. The pg default (10) times a few warm
+    // instances blows past Supabase pooler limits (EMAXCONNSESSION), so cap it low and
+    // let idle connections go quickly.
+    max: process.env.NODE_ENV === "production" ? 3 : 10,
+    idleTimeoutMillis: 10_000,
     ...(isLocal ? {} : { ssl: { rejectUnauthorized: false } }),
   });
   return new PrismaClient({

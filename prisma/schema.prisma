@@ -60,6 +60,7 @@ model Product {
   name            String
   size            String? // e.g. 4-inch (feature 1)
   variant         String? // brand/thickness etc. (feature 1)
+  category        String? // grouping tag, e.g. "Cutting Discs"; picked from existing tags or typed new
   // unit conversions (feature 3) — pieces per higher unit; 0 = not sold in that unit
   piecesPerBox    Int      @default(1)
   piecesPerCarton Int      @default(0)
@@ -77,6 +78,7 @@ model Product {
   creditNoteItems CreditNoteItem[]
 
   @@index([name])
+  @@index([category])
 }
 
 enum MovementType {
