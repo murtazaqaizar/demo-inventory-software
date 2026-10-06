@@ -1,10 +1,11 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
-import Link from "next/link";
+import { useActionState, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createProduct, updateProduct, type ActionResult } from "../actions";
 import { CategoryCombobox } from "@/components/category-combobox";
+import type { ProductTagRow } from "@/lib/products";
+import { TagManager } from "./tag-manager";
 import { Button, FieldError, Input, Label, Panel, numInputClass } from "@/components/ui";
 
 export type ProductInitial = {
@@ -21,15 +22,18 @@ export type ProductInitial = {
 
 export function ProductForm({
   canSeeCost,
-  categories,
+  isOwner,
+  tags,
   initial,
 }: {
   canSeeCost: boolean;
-  categories: string[];
+  isOwner: boolean;
+  tags: ProductTagRow[];
   initial?: ProductInitial;
 }) {
   const router = useRouter();
   const editing = !!initial;
+  const [managingTags, setManagingTags] = useState(false);
   const [state, formAction, pending] = useActionState(
     async (_prev: ActionResult, fd: FormData) => (editing ? updateProduct(fd) : createProduct(fd)),
     { ok: false }
@@ -62,11 +66,16 @@ export function ProductForm({
         <div>
           <div className="flex max-w-[480px] items-baseline justify-between gap-2">
             <Label htmlFor="category">Category</Label>
-            <Link href="/products/tags" className="text-[13px] text-ink-muted hover:text-ink hover:underline">
-              Manage tags
-            </Link>
+            <button
+              type="button"
+              onClick={() => setManagingTags((v) => !v)}
+              className="text-[13px] text-ink-muted hover:text-ink hover:underline"
+            >
+              {managingTags ? "Done" : "Manage tags"}
+            </button>
           </div>
-          <CategoryCombobox options={categories} defaultValue={initial?.category ?? ""} />
+          <CategoryCombobox options={tags.map((t) => t.name)} defaultValue={initial?.category ?? ""} />
+          {managingTags && <TagManager tags={tags} canRemove={isOwner} />}
         </div>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-3">

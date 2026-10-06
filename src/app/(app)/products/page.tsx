@@ -83,14 +83,9 @@ export default async function ProductsPage({
         title="Products / Stock"
         description="Catalogue with sizes & variants, live stock levels and low-stock alerts."
         action={
-          <div className="flex gap-2.5">
-            <Link href="/products/tags">
-              <Button variant="secondary">Tags</Button>
-            </Link>
-            <Link href="/products/new">
-              <Button>+ New product</Button>
-            </Link>
-          </div>
+          <Link href="/products/new">
+            <Button>+ New product</Button>
+          </Link>
         }
       />
 

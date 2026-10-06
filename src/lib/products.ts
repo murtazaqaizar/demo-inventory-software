@@ -14,7 +14,7 @@ export async function nextProductCode(): Promise<string> {
 
 // Product category = a free-text tag. This is the distinct set IN USE across active
 // products — it drives the filter chips on the Products page. The form's dropdown
-// uses listProductTags() instead, which also includes tags no product has yet.
+// uses listProductTagsWithCounts() instead, which also includes tags no product has yet.
 export async function listCategories(): Promise<string[]> {
   const rows = await prisma.product.findMany({
     where: { active: true, category: { not: null } },
@@ -27,23 +27,8 @@ export async function listCategories(): Promise<string[]> {
 
 export type ProductTagRow = { id: string; name: string; productCount: number };
 
-// The managed tag list (ProductTag table) — what the product form's dropdown offers.
-// Tags created on the Tags screen show here even before any product uses them.
-export async function listProductTags(): Promise<string[]> {
-  try {
-    const rows = await prisma.productTag.findMany({
-      where: { active: true },
-      orderBy: { name: "asc" },
-      select: { name: true },
-    });
-    return rows.map((r) => r.name);
-  } catch {
-    // Table not there yet (migration pending) — fall back to the tags in use.
-    return listCategories();
-  }
-}
-
-// For the Tags screen: each active tag with how many active products carry it.
+// The managed tag list (ProductTag table) for the product form: each active tag,
+// including ones no product uses yet, with how many active products carry it.
 export async function listProductTagsWithCounts(): Promise<ProductTagRow[]> {
   const [tags, counts] = await Promise.all([
     prisma.productTag.findMany({

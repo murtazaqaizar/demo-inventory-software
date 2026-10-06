@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
-import { listProductTags } from "@/lib/products";
+import { listProductTagsWithCounts } from "@/lib/products";
 import { PageHeader } from "@/components/ui";
 import { ProductForm } from "../../new/product-form";
 
@@ -13,9 +13,9 @@ export default async function EditProductPage({
   const user = await requireUser();
   const { id } = await params;
 
-  const [product, categories] = await Promise.all([
+  const [product, tags] = await Promise.all([
     prisma.product.findUnique({ where: { id } }),
-    listProductTags(),
+    listProductTagsWithCounts(),
   ]);
   if (!product) notFound();
 
@@ -24,7 +24,8 @@ export default async function EditProductPage({
       <PageHeader title={`Edit ${product.code}`} description="Change this product's details." />
       <ProductForm
         canSeeCost={user.role === "OWNER"}
-        categories={categories}
+        isOwner={user.role === "OWNER"}
+        tags={tags}
         initial={{
           id: product.id,
           name: product.name,
