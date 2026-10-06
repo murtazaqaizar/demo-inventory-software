@@ -4,6 +4,7 @@ import { requireUser } from "@/lib/guards";
 import { getStockMap } from "@/lib/stock";
 import { formatPKR } from "@/lib/money";
 import { listCategories } from "@/lib/products";
+import { formatQty, formatQtyUnit, unitOf, unitShort, type Unit } from "@/lib/qty";
 import {
   Badge,
   Button,
@@ -44,17 +45,19 @@ export default async function ProductsPage({
       { code: { contains: sp.q, mode: "insensitive" } },
       { size: { contains: sp.q, mode: "insensitive" } },
       { variant: { contains: sp.q, mode: "insensitive" } },
-      { category: { contains: sp.q, mode: "insensitive" } },
+      { color: { contains: sp.q, mode: "insensitive" } },
+      { category: { name: { contains: sp.q, mode: "insensitive" } } },
     ];
   }
-  // ?category=<tag> filters to one category; ?category=none = products without one.
-  if (sp.category === NO_CATEGORY) where.category = null;
-  else if (sp.category) where.category = sp.category;
+  // ?category=<id> filters to one category; ?category=none = products without one.
+  if (sp.category === NO_CATEGORY) where.categoryId = null;
+  else if (sp.category) where.categoryId = sp.category;
 
   const [categories, products, total] = await Promise.all([
     listCategories(),
     prisma.product.findMany({
       where,
+      include: { category: { select: { name: true, unit: true } } },
       orderBy: { code: "asc" },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
@@ -93,7 +96,7 @@ export default async function ProductsPage({
         <SearchBar
           action="/products"
           q={sp.q}
-          placeholder="Search name, code, size, brand or category"
+          placeholder="Search name, code, size, brand, color or category"
         >
           {sp.category && <input type="hidden" name="category" value={sp.category} />}
         </SearchBar>
@@ -105,8 +108,8 @@ export default async function ProductsPage({
               All
             </Link>
             {categories.map((c) => (
-              <Link key={c} href={tagHref(c)} className={tagClass(sp.category === c)}>
-                {c}
+              <Link key={c.id} href={tagHref(c.id)} className={tagClass(sp.category === c.id)}>
+                {c.name} <span className="ml-1 text-ink-faint">{unitShort(c.unit as Unit)}</span>
               </Link>
             ))}
             <Link href={tagHref(NO_CATEGORY)} className={tagClass(sp.category === NO_CATEGORY)}>
@@ -128,8 +131,8 @@ export default async function ProductsPage({
                 <tr>
                   <th className={thClass}>Code</th>
                   <th className={thClass}>Product</th>
-                  <th className={thClass}>Units</th>
-                  <th className={thNumClass}>Stock (pcs)</th>
+                  <th className={thClass}>Category</th>
+                  <th className={thNumClass}>Stock</th>
                   {owner && <th className={thNumClass}>Latest cost</th>}
                   <th className={thClass}>Adjust</th>
                   <th className={thClass} />
@@ -138,7 +141,8 @@ export default async function ProductsPage({
               <tbody>
                 {products.map((p) => {
                   const qty = stock.get(p.id) ?? 0;
-                  const low = qty <= p.minStockLevel;
+                  const low = qty <= p.minStockMilli;
+                  const unit = unitOf(p as { category: { unit: Unit } | null });
                   return (
                     <tr key={p.id} className={rowClass}>
                       <td
@@ -151,27 +155,21 @@ export default async function ProductsPage({
                         <div className="text-right sm:text-left">
                           <div className="font-medium text-ink">{p.name}</div>
                           <div className="text-[13px] text-ink-muted">
-                            {[p.size, p.variant].filter(Boolean).join(" · ")}
+                            {[p.size, p.variant, p.color].filter(Boolean).join(" · ")}
                           </div>
-                          {p.category && (
-                            <div className="mt-1">
-                              <Badge>{p.category}</Badge>
-                            </div>
-                          )}
                         </div>
                       </td>
                       <td
-                        className={`${tdClass} font-mono text-[13px] text-ink-muted`}
-                        data-label="Units"
+                        className={`${tdClass} text-[13px] text-ink-muted`}
+                        data-label="Category"
                       >
-                        1 box = {p.piecesPerBox} pcs
-                        {p.piecesPerCarton > 0 && <> · 1 carton = {p.piecesPerCarton} pcs</>}
+                        {p.category ? <Badge>{p.category.name}</Badge> : "—"}
                       </td>
                       <td className={tdNumClass} data-label="Stock">
-                        <span className="font-medium text-ink">{qty}</span>
+                        <span className="font-medium text-ink">{formatQtyUnit(qty, unit)}</span>
                         {low && (
                           <span className="ml-2">
-                            <Badge tone="red">Low · min {p.minStockLevel}</Badge>
+                            <Badge tone="red">Low · min {formatQty(p.minStockMilli)}</Badge>
                           </span>
                         )}
                       </td>
@@ -181,7 +179,7 @@ export default async function ProductsPage({
                         </td>
                       )}
                       <td className={tdClass} data-label="Adjust">
-                        <StockAdjuster productId={p.id} />
+                        <StockAdjuster productId={p.id} unit={unit} />
                       </td>
                       <td className={`${tdClass} text-right`} data-label="Actions">
                         <RowMenu>

@@ -2,6 +2,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireOwnerPage } from "@/lib/guards";
+import { PRODUCT_UNIT } from "@/lib/products";
+import { formatQtyTotals, formatQtyUnit, lineAmount, unitOf } from "@/lib/qty";
 import { formatPKR } from "@/lib/money";
 import { getSupplierBalance } from "@/lib/suppliers";
 import { Badge, Button, Panel, PageHeader } from "@/components/ui";
@@ -29,7 +31,7 @@ export default async function PurchaseDetailPage({
     where: { id },
     include: {
       supplier: true,
-      items: { include: { product: true } },
+      items: { include: { product: { include: PRODUCT_UNIT } } },
       movements: true,
     },
   });
@@ -55,10 +57,10 @@ export default async function PurchaseDetailPage({
     },
   });
 
-  const goods = purchase.items.reduce((s, it) => s + it.supplierUnitCostPaisa * it.pieces, 0);
+  const goods = purchase.items.reduce((s, it) => s + lineAmount(it.qtyMilli, it.supplierUnitCostPaisa), 0);
   const extras =
     purchase.freightPaisa + purchase.dutyPaisa + purchase.clearingPaisa + purchase.transportPaisa;
-  const totalPieces = purchase.items.reduce((s, it) => s + it.pieces, 0);
+  const totalQty = formatQtyTotals(purchase.items.map((it) => ({ qtyMilli: it.qtyMilli, unit: unitOf(it.product) })));
 
   const supplierBalance = purchase.supplierId
     ? await getSupplierBalance(purchase.supplierId)
@@ -103,9 +105,9 @@ export default async function PurchaseDetailPage({
           <thead className="border-b border-line text-left text-ink-muted">
             <tr>
               <th className="h-11 px-4 py-3 font-medium">Product</th>
-              <th className="h-11 px-4 py-3 font-medium">Pieces</th>
-              <th className="h-11 px-4 py-3 font-medium">Supplier cost /pc</th>
-              <th className="h-11 px-4 py-3 font-medium">Landed cost /pc</th>
+              <th className="h-11 px-4 py-3 font-medium">Qty</th>
+              <th className="h-11 px-4 py-3 font-medium">Supplier cost /unit</th>
+              <th className="h-11 px-4 py-3 font-medium">Landed cost /unit</th>
               <th className="h-11 px-4 py-3 font-medium">Line total (landed)</th>
             </tr>
           </thead>
@@ -121,11 +123,11 @@ export default async function PurchaseDetailPage({
                   </Link>
                   {it.product.size && <span className="text-ink-muted"> {it.product.size}</span>}
                 </td>
-                <td className="px-4 py-3 text-ink-muted" data-label="Pieces">{it.pieces}</td>
-                <td className="px-4 py-3 text-ink-muted" data-label="Supplier cost /pc">
+                <td className="px-4 py-3 text-ink-muted" data-label="Qty">{formatQtyUnit(it.qtyMilli, unitOf(it.product))}</td>
+                <td className="px-4 py-3 text-ink-muted" data-label="Supplier cost /unit">
                   {formatPKR(it.supplierUnitCostPaisa)}
                 </td>
-                <td className="h-11 px-4 py-3" data-label="Landed cost /pc">
+                <td className="h-11 px-4 py-3" data-label="Landed cost /unit">
                   <span className="font-medium">{formatPKR(it.landedUnitCostPaisa)}</span>
                   {it.landedUnitCostPaisa > it.supplierUnitCostPaisa && (
                     <span className="ml-1 text-xs text-ink-muted">
@@ -134,7 +136,7 @@ export default async function PurchaseDetailPage({
                   )}
                 </td>
                 <td className="px-4 py-3 text-ink" data-label="Line total (landed)">
-                  {formatPKR(it.landedUnitCostPaisa * it.pieces)}
+                  {formatPKR(lineAmount(it.qtyMilli, it.landedUnitCostPaisa))}
                 </td>
               </tr>
             ))}
@@ -144,7 +146,7 @@ export default async function PurchaseDetailPage({
               <td className="h-11 px-4 py-3 font-medium">
                 {purchase.items.length} line{purchase.items.length === 1 ? "" : "s"}
               </td>
-              <td className="h-11 px-4 py-3 font-medium">{totalPieces} pcs</td>
+              <td className="h-11 px-4 py-3 font-medium">{totalQty}</td>
               <td className="h-11 px-4 py-3" colSpan={2} />
               <td className="px-4 py-3 font-semibold text-ink">
                 {formatPKR(goods + extras)}
@@ -179,7 +181,7 @@ export default async function PurchaseDetailPage({
           {extras > 0 && (
             <p className="mt-3 text-xs text-ink-muted">
               Extras are spread across the lines by value, which is where each line&apos;s landed
-              cost per piece comes from.
+              cost per unit comes from.
             </p>
           )}
         </Panel>
@@ -211,7 +213,7 @@ export default async function PurchaseDetailPage({
             )}
 
             <div className="mt-4 border-t border-line pt-3">
-              <Row label="Pieces added to stock" value={`${totalPieces} pcs`} />
+              <Row label="Added to stock" value={totalQty} />
               <Row
                 label="Stock movements recorded"
                 value={String(purchase.movements.length)}

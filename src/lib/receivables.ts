@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { lineAmount } from "@/lib/qty";
 import { Prisma } from "@/generated/prisma/client";
 import { num } from "@/lib/sql";
 
@@ -22,11 +23,12 @@ import { num } from "@/lib/sql";
 // render, so page time grew with total history forever. Everything below returns
 // one row per customer (or per unpaid invoice) instead.
 
-export function lineTotal(it: { ratePaisa: number; quantity: number; isSample?: boolean }) {
-  return it.isSample ? 0 : it.ratePaisa * it.quantity;
+// qtyMilli = thousandths of the line's unit; rounding matches the SQL sums below.
+export function lineTotal(it: { ratePaisa: number; qtyMilli: number; isSample?: boolean }) {
+  return it.isSample ? 0 : lineAmount(it.qtyMilli, it.ratePaisa);
 }
 
-export function sumLines(items: { ratePaisa: number; quantity: number; isSample?: boolean }[]) {
+export function sumLines(items: { ratePaisa: number; qtyMilli: number; isSample?: boolean }[]) {
   return items.reduce((s, it) => s + lineTotal(it), 0);
 }
 
@@ -79,7 +81,7 @@ export async function getCustomerLedgers(
     FROM "Customer" c
     LEFT JOIN (
       SELECT i."customerId",
-             SUM(CASE WHEN it."isSample" THEN 0 ELSE it."ratePaisa" * it."quantity" END) AS "charged"
+             SUM(CASE WHEN it."isSample" THEN 0 ELSE ROUND(it."qtyMilli"::numeric * it."ratePaisa" / 1000) END) AS "charged"
       FROM "Invoice" i
       JOIN "InvoiceItem" it ON it."invoiceId" = i."id"
       WHERE i."status" = 'ACTIVE' ${scopeInvoice}
@@ -99,7 +101,7 @@ export async function getCustomerLedgers(
       GROUP BY p."customerId"
     ) pm ON pm."customerId" = c."id"
     LEFT JOIN (
-      SELECT n."customerId", SUM(ci."ratePaisa" * ci."quantity") AS "credited"
+      SELECT n."customerId", SUM(ROUND(ci."qtyMilli"::numeric * ci."ratePaisa" / 1000)) AS "credited"
       FROM "CreditNote" n
       JOIN "CreditNoteItem" ci ON ci."creditNoteId" = n."id"
       WHERE n."refundMethod" = 'CREDIT_TO_ACCOUNT' ${scopeCreditNote}
@@ -144,7 +146,7 @@ export async function getTotalReceivable(): Promise<number> {
     SELECT SUM(
       c."openingBalancePaisa"
       + COALESCE((
-          SELECT SUM(CASE WHEN it."isSample" THEN 0 ELSE it."ratePaisa" * it."quantity" END)
+          SELECT SUM(CASE WHEN it."isSample" THEN 0 ELSE ROUND(it."qtyMilli"::numeric * it."ratePaisa" / 1000) END)
           FROM "Invoice" i
           JOIN "InvoiceItem" it ON it."invoiceId" = i."id"
           WHERE i."customerId" = c."id" AND i."status" = 'ACTIVE'
@@ -159,7 +161,7 @@ export async function getTotalReceivable(): Promise<number> {
           SELECT SUM(p."amountPaisa") FROM "Payment" p WHERE p."customerId" = c."id"
         ), 0)
       - COALESCE((
-          SELECT SUM(ci."ratePaisa" * ci."quantity")
+          SELECT SUM(ROUND(ci."qtyMilli"::numeric * ci."ratePaisa" / 1000))
           FROM "CreditNote" n
           JOIN "CreditNoteItem" ci ON ci."creditNoteId" = n."id"
           WHERE n."customerId" = c."id" AND n."refundMethod" = 'CREDIT_TO_ACCOUNT'
@@ -223,7 +225,7 @@ export async function getAging(asOf: Date = new Date()): Promise<CustomerAging[]
         JOIN "Customer" c ON c."id" = i."customerId" AND c."isCashCustomer" = false
         LEFT JOIN (
           SELECT it."invoiceId",
-                 SUM(CASE WHEN it."isSample" THEN 0 ELSE it."ratePaisa" * it."quantity" END) AS "total"
+                 SUM(CASE WHEN it."isSample" THEN 0 ELSE ROUND(it."qtyMilli"::numeric * it."ratePaisa" / 1000) END) AS "total"
           FROM "InvoiceItem" it
           GROUP BY it."invoiceId"
         ) t ON t."invoiceId" = i."id"
@@ -239,7 +241,7 @@ export async function getAging(asOf: Date = new Date()): Promise<CustomerAging[]
     `,
     prisma.payment.groupBy({ by: ["customerId"], _sum: { amountPaisa: true } }),
     prisma.$queryRaw<{ customerId: string; credited: number | string }[]>`
-      SELECT n."customerId", SUM(ci."ratePaisa" * ci."quantity") AS "credited"
+      SELECT n."customerId", SUM(ROUND(ci."qtyMilli"::numeric * ci."ratePaisa" / 1000)) AS "credited"
       FROM "CreditNote" n
       JOIN "CreditNoteItem" ci ON ci."creditNoteId" = n."id"
       WHERE n."refundMethod" = 'CREDIT_TO_ACCOUNT'

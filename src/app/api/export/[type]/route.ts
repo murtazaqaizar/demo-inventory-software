@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { fromMilli, lineAmount, unitOf, unitShort } from "@/lib/qty";
 import { requireOwnerApi, ForbiddenError } from "@/lib/guards";
 import { getAging, sumLines, getCustomerLedgers } from "@/lib/receivables";
 import { getStockMap } from "@/lib/stock";
@@ -39,18 +40,33 @@ export async function GET(
 
   switch (type) {
     case "stock-valuation": {
-      const products = await prisma.product.findMany({ where: { active: true }, orderBy: { code: "asc" } });
+      const products = await prisma.product.findMany({
+        where: { active: true },
+        include: { category: { select: { name: true, unit: true } } },
+        orderBy: { code: "asc" },
+      });
       const stock = await getStockMap(products.map((p) => p.id));
-      rows = [["Code", "Product", "Size", "Variant", "Pieces in stock", "Cost/piece (Rs)", "Stock value (Rs)"]];
+      rows = [["Code", "Product", "Category", "Color", "Size", "Variant", "In stock", "Unit", "Cost/unit (Rs)", "Stock value (Rs)"]];
       let totalValue = 0;
       for (const p of products) {
         const qty = stock.get(p.id) ?? 0;
-        const value = qty * p.latestCostPaisa;
+        const value = lineAmount(qty, p.latestCostPaisa);
         totalValue += value;
-        rows.push([p.code, p.name, p.size ?? "", p.variant ?? "", qty, rs(p.latestCostPaisa), rs(value)]);
+        rows.push([
+          p.code,
+          p.name,
+          p.category?.name ?? "",
+          p.color ?? "",
+          p.size ?? "",
+          p.variant ?? "",
+          fromMilli(qty),
+          unitShort(unitOf(p)),
+          rs(p.latestCostPaisa),
+          rs(value),
+        ]);
       }
       rows.push([]);
-      rows.push(["", "", "", "", "", "TOTAL STOCK VALUE", rs(totalValue)]);
+      rows.push(["", "", "", "", "", "", "", "", "TOTAL STOCK VALUE", rs(totalValue)]);
       break;
     }
 
@@ -125,10 +141,18 @@ export async function GET(
         ["Net profit", rs(statement.netPaisa)],
         [],
         ["Profit per product"],
-        ["Code", "Product", "Pieces sold", "Revenue (Rs)", "COGS (Rs)", "Profit (Rs)"],
+        ["Code", "Product", "Qty sold", "Unit", "Revenue (Rs)", "COGS (Rs)", "Profit (Rs)"],
       ];
       for (const p of perProduct) {
-        rows.push([p.code, p.name, p.qtyPieces, rs(p.revenuePaisa), rs(p.cogsPaisa), rs(p.profitPaisa)]);
+        rows.push([
+          p.code,
+          p.name,
+          p.qtyMilli === null ? "" : fromMilli(p.qtyMilli),
+          p.qtyMilli === null ? "" : unitShort(p.unit),
+          rs(p.revenuePaisa),
+          rs(p.cogsPaisa),
+          rs(p.profitPaisa),
+        ]);
       }
       name = `income-statement-${period.label.replace(/\s+/g, "-")}`;
       break;

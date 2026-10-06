@@ -14,11 +14,13 @@ import {
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
 import { formatPKR } from "@/lib/money";
+import { UNITS, lineAmount, qtyStep, toMilli, unitLabel, unitShort, type Unit } from "@/lib/qty";
 
 type CustomerOpt = { id: string; name: string; isCash: boolean };
-type Line = { productId: string; unit: "PIECE" | "BOX" | "CARTON"; quantity: string; rateRs: string };
+// "custom" credits a free-text bill line (goods bought from outside): money only, no stock.
+type Line = { kind: "stock" | "custom"; productId: string; description: string; unit: Unit; qty: string; rateRs: string };
 
-const emptyLine: Line = { productId: "", unit: "PIECE", quantity: "", rateRs: "" };
+const emptyLine: Line = { kind: "stock", productId: "", description: "", unit: "PIECE", qty: "", rateRs: "" };
 
 export function ReturnBuilder({
   products,
@@ -38,7 +40,7 @@ export function ReturnBuilder({
   const totalPaisa = useMemo(
     () =>
       lines.reduce(
-        (s, l) => s + Math.round((Number(l.rateRs) || 0) * 100) * (Number(l.quantity) || 0),
+        (s, l) => s + lineAmount(toMilli(l.qty || 0) || 0, Math.round((Number(l.rateRs) || 0) * 100)),
         0
       ),
     [lines]
@@ -51,15 +53,14 @@ export function ReturnBuilder({
   function submit() {
     setError(null);
     const items = lines
-      .filter((l) => l.productId && Number(l.quantity) > 0)
-      .map((l) => ({
-        productId: l.productId,
-        unit: l.unit,
-        quantity: Number(l.quantity),
-        rateRs: Number(l.rateRs) || 0,
-      }));
+      .filter((l) => (l.kind === "stock" ? l.productId : l.description.trim()) && Number(l.qty) > 0)
+      .map((l) =>
+        l.kind === "stock"
+          ? { productId: l.productId, qty: Number(l.qty), rateRs: Number(l.rateRs) || 0 }
+          : { description: l.description.trim(), unit: l.unit, qty: Number(l.qty), rateRs: Number(l.rateRs) || 0 }
+      );
     if (items.length === 0) {
-      setError("Add at least one line with a product and quantity.");
+      setError("Add at least one line with a product (or custom item name) and quantity.");
       return;
     }
     startTransition(async () => {
@@ -104,22 +105,67 @@ export function ReturnBuilder({
       <Panel pad>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-semibold text-ink">Returned items</h2>
-          <Button type="button" variant="secondary" onClick={() => setLines((p) => [...p, { ...emptyLine }])} className="px-3 py-1.5">
-            + Add line
-          </Button>
+          <div className="flex gap-2">
+            <Button type="button" variant="secondary" onClick={() => setLines((p) => [...p, { ...emptyLine }])} className="px-3 py-1.5">
+              + Add line
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setLines((p) => [...p, { ...emptyLine, kind: "custom" }])}
+              className="px-3 py-1.5"
+            >
+              + Custom item
+            </Button>
+          </div>
         </div>
 
         <div className="space-y-3">
-          {lines.map((l, i) => (
-            <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_100px_90px_110px_auto] sm:items-center">
-              <ProductPicker products={products} value={l.productId} onChange={(id) => updateLine(i, { productId: id })} />
-              <Select value={l.unit} onChange={(e) => updateLine(i, { unit: e.target.value as Line["unit"] })} aria-label="Unit">
-                <option value="PIECE">Piece</option>
-                <option value="BOX">Box</option>
-                <option value="CARTON">Carton</option>
-              </Select>
-              <Input type="number" min={1} placeholder="Qty" value={l.quantity} onChange={(e) => updateLine(i, { quantity: e.target.value })} />
-              <Input type="number" min={0} step="0.01" placeholder="Rate Rs" value={l.rateRs} onChange={(e) => updateLine(i, { rateRs: e.target.value })} />
+          {lines.map((l, i) => {
+            const unit: Unit =
+              l.kind === "custom" ? l.unit : (products.find((p) => p.id === l.productId)?.unit ?? "PIECE");
+            return (
+            <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_100px_110px_120px_auto] sm:items-center">
+              {l.kind === "stock" ? (
+                <ProductPicker products={products} value={l.productId} onChange={(id) => updateLine(i, { productId: id })} />
+              ) : (
+                <Input
+                  placeholder="Custom item name (not from stock)"
+                  aria-label="Custom item name"
+                  maxLength={120}
+                  value={l.description}
+                  onChange={(e) => updateLine(i, { description: e.target.value })}
+                />
+              )}
+              {l.kind === "custom" ? (
+                <Select value={l.unit} onChange={(e) => updateLine(i, { unit: e.target.value as Unit })} aria-label="Unit">
+                  {UNITS.map((u) => (
+                    <option key={u.value} value={u.value}>
+                      {u.label}
+                    </option>
+                  ))}
+                </Select>
+              ) : (
+                <span className="text-[13px] text-ink-muted">{unitLabel(unit)}</span>
+              )}
+              <Input
+                type="number"
+                min={0}
+                step={qtyStep(unit)}
+                placeholder={`Qty (${unitShort(unit)})`}
+                aria-label={`Quantity in ${unitShort(unit)}`}
+                value={l.qty}
+                onChange={(e) => updateLine(i, { qty: e.target.value })}
+              />
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                placeholder={`Rate/${unitShort(unit)} Rs`}
+                aria-label={`Rate per ${unitLabel(unit).toLowerCase()} in rupees`}
+                value={l.rateRs}
+                onChange={(e) => updateLine(i, { rateRs: e.target.value })}
+              />
               <Button
                 type="button"
                 variant="secondary"
@@ -130,7 +176,8 @@ export function ReturnBuilder({
                 ✕
               </Button>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="mt-4 flex justify-between border-t border-line pt-4 text-base">

@@ -46,6 +46,11 @@ const rnd = () => ((s = (s * 1103515245 + 12345) % 2147483648) / 2147483648);
 const int = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1));
 const rupees = (r: number) => Math.round(r * 100); // paisa is the storage unit everywhere
 const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000);
+// Quantities are stored in thousandths of the product's unit (src/lib/qty.ts).
+// This script thinks in plain units and converts at every write.
+const M = (qty: number) => Math.round(qty * 1000);
+// Line amount in paisa, rounded per line the same way the app does it.
+const amount = (qty: number, ratePaisa: number) => Math.round(qty * ratePaisa);
 
 async function wipe() {
   // Children before parents.
@@ -67,6 +72,7 @@ async function wipe() {
   await prisma.moneyMovement.deleteMany();
   await prisma.moneyAccount.deleteMany();
   await prisma.product.deleteMany();
+  await prisma.category.deleteMany();
 
   // Bill and purchase numbers are what the shop actually reads. After a reset the
   // demo should open at #1, not carry on from the last run's sequence.
@@ -131,34 +137,53 @@ async function main() {
   });
 
   // --- Products ------------------------------------------------------------
+// Categories carry the unit their products are counted and sold in: tools by
+  // the piece, wire by the meter, pipe by the foot.
+  const categorySpecs = [
+    { key: "abr", name: "Abrasives", unit: "PIECE" },
+    { key: "tools", name: "Hand Tools", unit: "PIECE" },
+    { key: "safety", name: "Safety & Welding", unit: "PIECE" },
+    { key: "wire", name: "Electric Wire", unit: "METER" },
+    { key: "pipe", name: "PVC Pipe", unit: "FEET" },
+  ] as const;
+  const categoryIds = new Map<string, string>();
+  for (const c of categorySpecs) {
+    const row = await prisma.category.create({ data: { name: c.name, unit: c.unit } });
+    categoryIds.set(c.key, row.id);
+  }
+
+  // min / cost are per one unit of the category (piece, meter or foot).
   const productSpecs = [
-    { code: "PRD-0001", name: "Cutting Disc", size: "4 inch", variant: "1.0mm", box: 25, carton: 200, min: 50, cost: 45 },
-    { code: "PRD-0002", name: "Grinding Disc", size: "4 inch", variant: "6.0mm", box: 10, carton: 100, min: 20, cost: 90 },
-    { code: "PRD-0003", name: "Flap Disc", size: "4 inch", variant: "80 grit", box: 10, carton: 100, min: 20, cost: 120 },
+    { code: "PRD-0001", name: "Cutting Disc", size: "4 inch", variant: "1.0mm", cat: "abr", min: 50, cost: 45 },
+    { code: "PRD-0002", name: "Grinding Disc", size: "4 inch", variant: "6.0mm", cat: "abr", min: 20, cost: 90 },
+    { code: "PRD-0003", name: "Flap Disc", size: "4 inch", variant: "80 grit", cat: "abr", min: 20, cost: 120 },
     // Reorder level set above the stock on hand, so the low-stock warning has a
     // real example to show. The sell guard below then leaves it alone.
-    { code: "PRD-0004", name: "Hacksaw Blade", size: "12 inch", variant: "24 TPI", box: 12, carton: 144, min: 120, cost: 65 },
-    { code: "PRD-0005", name: "Drill Bit Set", size: "1-10mm", variant: "HSS, 13 pc", box: 6, carton: 60, min: 10, cost: 850 },
-    { code: "PRD-0006", name: "Measuring Tape", size: "5 metre", variant: "Steel", box: 12, carton: 120, min: 24, cost: 320 },
-    { code: "PRD-0007", name: "Safety Gloves", size: "Large", variant: "Cotton, pair", box: 20, carton: 200, min: 40, cost: 150 },
-    { code: "PRD-0008", name: "Welding Rod", size: "2.5mm", variant: "5 kg pack", box: 4, carton: 40, min: 8, cost: 1_450 },
+    { code: "PRD-0004", name: "Hacksaw Blade", size: "12 inch", variant: "24 TPI", cat: "tools", min: 120, cost: 65 },
+    { code: "PRD-0005", name: "Drill Bit Set", size: "1-10mm", variant: "HSS, 13 pc", cat: "tools", min: 10, cost: 850 },
+    { code: "PRD-0006", name: "Measuring Tape", size: "5 metre", variant: "Steel", cat: "tools", min: 24, cost: 320 },
+    { code: "PRD-0007", name: "Safety Gloves", size: "Large", variant: "Cotton, pair", cat: "safety", min: 40, cost: 150 },
+    { code: "PRD-0008", name: "Welding Rod", size: "2.5mm", variant: "5 kg pack", cat: "safety", min: 8, cost: 1_450 },
+    // Sold by length. Opening stock for wire is whole rolls: 200 rolls × 80 m.
+    { code: "PRD-0009", name: "PVC Wire", size: "1.5mm", variant: "Single core", color: "Red", cat: "wire", min: 1_000, cost: 38 },
+    { code: "PRD-0010", name: "PVC Wire", size: "1.5mm", variant: "Single core", color: "Black", cat: "wire", min: 1_000, cost: 38 },
+    { code: "PRD-0011", name: "PVC Pipe", size: "1 inch", variant: "Class C", color: "Grey", cat: "pipe", min: 200, cost: 55 },
   ];
   const products = [];
   for (const p of productSpecs) {
-    products.push(
-      await prisma.product.create({
-        data: {
-          code: p.code,
-          name: p.name,
-          size: p.size,
-          variant: p.variant,
-          piecesPerBox: p.box,
-          piecesPerCarton: p.carton,
-          minStockLevel: p.min,
-          latestCostPaisa: rupees(p.cost),
-        },
-      })
-    );
+    const created = await prisma.product.create({
+      data: {
+        code: p.code,
+        name: p.name,
+        size: p.size,
+        variant: p.variant,
+        color: "color" in p ? p.color : null,
+        categoryId: categoryIds.get(p.cat),
+        minStockMilli: M(p.min),
+        latestCostPaisa: rupees(p.cost),
+      },
+    });
+    products.push({ ...created, min: p.min, byLength: p.cat === "wire" || p.cat === "pipe" });
   }
 
   // Opening stock count. One product is deliberately left thin so the low-stock
@@ -166,13 +191,13 @@ async function main() {
   // out below, because a demo that shows negative stock reads as a broken app.
   const stockLeft = new Map<string, number>();
   for (const [i, p] of products.entries()) {
-    const opening = i === 3 ? 60 : int(400, 900);
+    const opening = i === 3 ? 60 : p.byLength ? (p.code === "PRD-0011" ? 1_200 : 200 * 80) : int(400, 900);
     stockLeft.set(p.id, opening);
     await prisma.stockMovement.create({
       data: {
         productId: p.id,
         type: "ADJUST",
-        piecesDelta: opening,
+        qtyMilli: M(opening),
         unitCostPaisa: p.latestCostPaisa,
         reason: "Opening stock count",
         createdAt: daysAgo(60),
@@ -196,12 +221,12 @@ async function main() {
   for (const p of products.slice(0, 3)) {
     const pieces = 100;
     const unit = p.latestCostPaisa;
-    cashPurchaseTotal += pieces * unit;
+    cashPurchaseTotal += amount(pieces, unit);
     await prisma.purchaseItem.create({
-      data: { purchaseId: cashPurchase.id, productId: p.id, pieces, supplierUnitCostPaisa: unit, landedUnitCostPaisa: unit },
+      data: { purchaseId: cashPurchase.id, productId: p.id, qtyMilli: M(pieces), supplierUnitCostPaisa: unit, landedUnitCostPaisa: unit },
     });
     await prisma.stockMovement.create({
-      data: { productId: p.id, type: "PURCHASE_IN", piecesDelta: pieces, unitCostPaisa: unit, purchaseId: cashPurchase.id, createdAt: daysAgo(21) },
+      data: { productId: p.id, type: "PURCHASE_IN", qtyMilli: M(pieces), unitCostPaisa: unit, purchaseId: cashPurchase.id, createdAt: daysAgo(21) },
     });
     stockLeft.set(p.id, (stockLeft.get(p.id) ?? 0) + pieces);
   }
@@ -225,18 +250,18 @@ async function main() {
     },
   });
   const importLines = products.slice(4, 7).map((p) => ({ p, pieces: 60, unit: p.latestCostPaisa }));
-  const goodsValue = importLines.reduce((t, l) => t + l.pieces * l.unit, 0);
+  const goodsValue = importLines.reduce((t, l) => t + amount(l.pieces, l.unit), 0);
   const extras = freight + duty;
   for (const l of importLines) {
-    const lineValue = l.pieces * l.unit;
+    const lineValue = amount(l.pieces, l.unit);
     // BY VALUE allocation — each line's share of the extras is its share of goods value.
     const share = Math.round((extras * lineValue) / goodsValue);
     const landed = l.unit + Math.round(share / l.pieces);
     await prisma.purchaseItem.create({
-      data: { purchaseId: creditPurchase.id, productId: l.p.id, pieces: l.pieces, supplierUnitCostPaisa: l.unit, landedUnitCostPaisa: landed },
+      data: { purchaseId: creditPurchase.id, productId: l.p.id, qtyMilli: M(l.pieces), supplierUnitCostPaisa: l.unit, landedUnitCostPaisa: landed },
     });
     await prisma.stockMovement.create({
-      data: { productId: l.p.id, type: "PURCHASE_IN", piecesDelta: l.pieces, unitCostPaisa: landed, purchaseId: creditPurchase.id, createdAt: daysAgo(12) },
+      data: { productId: l.p.id, type: "PURCHASE_IN", qtyMilli: M(l.pieces), unitCostPaisa: landed, purchaseId: creditPurchase.id, createdAt: daysAgo(12) },
     });
     stockLeft.set(l.p.id, (stockLeft.get(l.p.id) ?? 0) + l.pieces);
     // Latest-cost method: the newest landed cost becomes the product's cost.
@@ -282,14 +307,14 @@ async function main() {
   // --- Bills ---------------------------------------------------------------
   // A spread of shapes: paid in full, part-paid, pure udhaar, a walk-in cash
   // sale, and one with a free sample line.
-  const billShapes: { customer: { id: string }; days: number; pay: "FULL" | "PART" | "NONE"; method: "CASH" | "ONLINE" | "UDHAAR"; lines: number; sample?: boolean }[] = [
+  const billShapes: { customer: { id: string }; days: number; pay: "FULL" | "PART" | "NONE"; method: "CASH" | "ONLINE" | "UDHAAR"; lines: number; sample?: boolean; custom?: boolean }[] = [
     { customer: customers[0], days: 18, pay: "FULL" as const, method: "CASH" as const, lines: 2 },
     { customer: customers[1], days: 15, pay: "NONE" as const, method: "UDHAAR" as const, lines: 3 },
     { customer: cashCustomer, days: 12, pay: "FULL" as const, method: "CASH" as const, lines: 1 },
     { customer: customers[2], days: 9, pay: "PART" as const, method: "CASH" as const, lines: 2 },
     { customer: customers[0], days: 7, pay: "FULL" as const, method: "ONLINE" as const, lines: 2 },
     { customer: customers[3], days: 5, pay: "NONE" as const, method: "UDHAAR" as const, lines: 2, sample: true },
-    { customer: customers[1], days: 3, pay: "FULL" as const, method: "CASH" as const, lines: 3 },
+    { customer: customers[1], days: 3, pay: "FULL" as const, method: "CASH" as const, lines: 3, custom: true },
     { customer: cashCustomer, days: 1, pay: "FULL" as const, method: "CASH" as const, lines: 2 },
   ];
 
@@ -319,9 +344,10 @@ async function main() {
       if (chosen.some((c) => c.p.id === p.id)) continue;
       const available = stockLeft.get(p.id) ?? 0;
       // Leave the thin product thin: never sell it down past its minimum level.
-      const sellable = Math.min(30, available - p.minStockLevel);
+      const sellable = Math.min(p.byLength ? 300 : 30, available - p.min);
       if (sellable < 4) continue;
-      const pieces = int(4, sellable);
+      // Wire and pipe go out in lengths with halves (12.5 m); everything else by the piece.
+      const pieces = p.byLength ? int(10, Math.floor(sellable) - 1) + int(0, 1) * 0.5 : int(4, sellable);
       // Sell at a margin over the latest cost.
       const rate = Math.round((p.latestCostPaisa * (120 + int(5, 45))) / 100);
       chosen.push({ p, pieces, rate });
@@ -339,9 +365,8 @@ async function main() {
         data: {
           invoiceId: invoice.id,
           productId: l.p.id,
-          unit: "PIECE",
-          quantity: l.pieces,
-          pieces: l.pieces,
+          unit: l.p.byLength ? (l.p.code === "PRD-0011" ? "FEET" : "METER") : "PIECE",
+          qtyMilli: M(l.pieces),
           ratePaisa: isSample ? 0 : l.rate,
           unitCostPaisa: l.p.latestCostPaisa,
           isSample,
@@ -351,7 +376,7 @@ async function main() {
         data: {
           productId: l.p.id,
           type: isSample ? "SAMPLE_OUT" : "SALE_OUT",
-          piecesDelta: -l.pieces,
+          qtyMilli: -M(l.pieces),
           unitCostPaisa: l.p.latestCostPaisa,
           invoiceId: invoice.id,
           createdAt: date,
@@ -359,11 +384,30 @@ async function main() {
       });
       await prisma.customerProductPrice.upsert({
         where: { customerId_productId: { customerId: b.customer.id, productId: l.p.id } },
-        update: { lastRatePaisa: isSample ? 0 : l.rate, lastUnit: "PIECE" },
-        create: { customerId: b.customer.id, productId: l.p.id, lastRatePaisa: isSample ? 0 : l.rate, lastUnit: "PIECE" },
+        update: { lastRatePaisa: isSample ? 0 : l.rate },
+        create: { customerId: b.customer.id, productId: l.p.id, lastRatePaisa: isSample ? 0 : l.rate },
       });
       stockLeft.set(l.p.id, (stockLeft.get(l.p.id) ?? 0) - l.pieces);
-      if (!isSample) total += l.rate * l.pieces;
+      if (!isSample) total += amount(l.pieces, l.rate);
+    }
+
+    // Goods bought from the market for this customer: a free-text line that never
+    // touches stock, with the shop's own cost typed in so profit stays honest.
+    if (b.custom) {
+      const qty = 2;
+      const rate = rupees(950);
+      await prisma.invoiceItem.create({
+        data: {
+          invoiceId: invoice.id,
+          productId: null,
+          description: "Extension board 4-way (bought from market)",
+          unit: "PIECE",
+          qtyMilli: M(qty),
+          ratePaisa: rate,
+          unitCostPaisa: rupees(800),
+        },
+      });
+      total += amount(qty, rate);
     }
 
     const received = b.pay === "FULL" ? total : b.pay === "PART" ? Math.round(total / 2) : 0;

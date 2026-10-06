@@ -14,12 +14,14 @@ import {
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
 import { formatPKR } from "@/lib/money";
+import { lineAmount, qtyStep, toMilli, unitLabel, unitShort } from "@/lib/qty";
 
 // Same shape the billing screen feeds its picker, plus the cost side — on a
 // purchase you want to see what this product last cost you while typing.
 type ProductOpt = PickerProduct & { latestCostPaisa?: number };
 type SupplierOpt = { id: string; name: string };
-type Line = { productId: string; pieces: string; unitCostRs: string };
+// qty is typed in the product's unit (pcs / m / ft); cost is per one unit.
+type Line = { productId: string; qty: string; unitCostRs: string };
 
 // Editing an existing purchase: same form, prefilled, saving through updatePurchase.
 export type PurchaseInitial = {
@@ -67,7 +69,7 @@ export function PurchaseBuilder({
   const [transportRs, setTransportRs] = useState(initial?.transportRs ?? "0");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [lines, setLines] = useState<Line[]>(
-    initial?.lines?.length ? initial.lines : [{ productId: "", pieces: "", unitCostRs: "" }]
+    initial?.lines?.length ? initial.lines : [{ productId: "", qty: "", unitCostRs: "" }]
   );
   const [restored, setRestored] = useState(false);
 
@@ -82,7 +84,7 @@ export function PurchaseBuilder({
       if (!raw) return;
       const d = JSON.parse(raw) as Draft;
       const hasContent =
-        d.lines?.some((l) => l.productId || l.pieces || l.unitCostRs) ||
+        d.lines?.some((l) => l.productId || l.qty || l.unitCostRs) ||
         d.supplierId ||
         d.notes;
       if (!hasContent) return;
@@ -100,7 +102,9 @@ export function PurchaseBuilder({
       setClearingRs(d.clearingRs ?? "0");
       setTransportRs(d.transportRs ?? "0");
       setNotes(d.notes ?? "");
-      if (d.lines?.length) setLines(d.lines);
+      // Drafts saved before decimal units used `pieces` for the quantity.
+      if (d.lines?.length)
+        setLines(d.lines.map((l) => ({ ...l, qty: l.qty ?? (l as { pieces?: string }).pieces ?? "" })));
       setRestored(true);
       /* eslint-enable react-hooks/set-state-in-effect */
     } catch {
@@ -148,16 +152,16 @@ export function PurchaseBuilder({
     setClearingRs("0");
     setTransportRs("0");
     setNotes("");
-    setLines([{ productId: "", pieces: "", unitCostRs: "" }]);
+    setLines([{ productId: "", qty: "", unitCostRs: "" }]);
     setRestored(false);
   }
 
   const totalValuePaisa = useMemo(
     () =>
       lines.reduce((s, l) => {
-        const pcs = Number(l.pieces) || 0;
+        const milli = toMilli(l.qty || 0) || 0;
         const cost = Number(l.unitCostRs) || 0;
-        return s + Math.round(cost * 100) * pcs;
+        return s + lineAmount(milli, Math.round(cost * 100));
       }, 0),
     [lines]
   );
@@ -174,7 +178,7 @@ export function PurchaseBuilder({
     setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   }
   function addLine() {
-    setLines((prev) => [...prev, { productId: "", pieces: "", unitCostRs: "" }]);
+    setLines((prev) => [...prev, { productId: "", qty: "", unitCostRs: "" }]);
   }
   function removeLine(i: number) {
     setLines((prev) => prev.filter((_, idx) => idx !== i));
@@ -183,10 +187,10 @@ export function PurchaseBuilder({
   function submit() {
     setError(null);
     const items = lines
-      .filter((l) => l.productId && Number(l.pieces) > 0)
+      .filter((l) => l.productId && Number(l.qty) > 0)
       .map((l) => ({
         productId: l.productId,
-        pieces: Number(l.pieces),
+        qty: Number(l.qty),
         unitCostRs: Number(l.unitCostRs) || 0,
       }));
     if (items.length === 0) {
@@ -301,7 +305,9 @@ export function PurchaseBuilder({
         </div>
 
         <div className="space-y-3">
-          {lines.map((l, i) => (
+          {lines.map((l, i) => {
+            const unit = products.find((x) => x.id === l.productId)?.unit ?? "PIECE";
+            return (
             <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_120px_140px_auto] sm:items-center">
               <ProductPicker
                 products={products}
@@ -320,16 +326,19 @@ export function PurchaseBuilder({
               />
               <Input
                 type="number"
-                min={1}
-                placeholder="Pieces"
-                value={l.pieces}
-                onChange={(e) => updateLine(i, { pieces: e.target.value })}
+                min={0}
+                step={qtyStep(unit)}
+                placeholder={`Qty (${unitShort(unit)})`}
+                aria-label={`Quantity in ${unitShort(unit)}`}
+                value={l.qty}
+                onChange={(e) => updateLine(i, { qty: e.target.value })}
               />
               <Input
                 type="number"
                 min={0}
                 step="0.01"
-                placeholder="Cost/pc Rs"
+                placeholder={`Cost/${unitShort(unit)} Rs`}
+                aria-label={`Cost per ${unitLabel(unit).toLowerCase()} in rupees`}
                 value={l.unitCostRs}
                 onChange={(e) => updateLine(i, { unitCostRs: e.target.value })}
               />
@@ -343,7 +352,8 @@ export function PurchaseBuilder({
                 ✕
               </Button>
             </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="mt-4 space-y-1 border-t border-line pt-4 text-sm">

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { num } from "@/lib/sql";
+import type { Unit } from "@/lib/qty";
 
 export type SalesTotals = { today: number; month: number; lastMonth: number };
 
@@ -22,7 +23,7 @@ export async function getSalesTotals(periods: {
                         THEN x."amt" ELSE 0 END), 0) AS "lastMonth"
     FROM (
       SELECT i."date" AS "date",
-             CASE WHEN it."isSample" THEN 0 ELSE it."ratePaisa" * it."quantity" END AS "amt"
+             CASE WHEN it."isSample" THEN 0 ELSE ROUND(it."qtyMilli"::numeric * it."ratePaisa" / 1000) END AS "amt"
       FROM "Invoice" i
       JOIN "InvoiceItem" it ON it."invoiceId" = i."id"
       WHERE i."status" = 'ACTIVE' AND i."date" >= ${startLastMonth}
@@ -41,11 +42,15 @@ export type IncomeStatement = {
   netPaisa: number;
 };
 
+// One row per product, plus a single "Custom items" row (productId null) for
+// free-text bill lines. qtyMilli is in `unit`; on the custom row units may mix,
+// so it is null there.
 export type ProductProfit = {
-  productId: string;
+  productId: string | null;
   code: string;
   name: string;
-  qtyPieces: number;
+  unit: Unit;
+  qtyMilli: number | null;
   revenuePaisa: number;
   cogsPaisa: number;
   profitPaisa: number;
@@ -61,9 +66,10 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
   // All three sides are grouped by product in Postgres, so what comes back is one
   // row per product rather than every line item in the period.
   type AggRow = {
-    productId: string;
-    code: string;
-    name: string;
+    productId: string | null;
+    code: string | null;
+    name: string | null;
+    unit: Unit;
     qty: number | string;
     revenue: number | string;
     cogs: number | string;
@@ -73,33 +79,35 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
     // Voided bills never count as sales (improvement 2). Sample lines carry no
     // revenue and are handled separately below.
     prisma.$queryRaw<AggRow[]>`
-      SELECT it."productId", p."code", p."name",
-             SUM(it."pieces")                          AS "qty",
-             SUM(it."ratePaisa" * it."quantity")       AS "revenue",
-             SUM(it."unitCostPaisa" * it."pieces")     AS "cogs"
+      SELECT it."productId", p."code", p."name", COALESCE(c."unit", 'PIECE')::text AS "unit",
+             SUM(it."qtyMilli")                          AS "qty",
+             SUM(ROUND(it."qtyMilli"::numeric * it."ratePaisa" / 1000))       AS "revenue",
+             SUM(ROUND(it."qtyMilli"::numeric * it."unitCostPaisa" / 1000))     AS "cogs"
       FROM "InvoiceItem" it
       JOIN "Invoice" i ON i."id" = it."invoiceId"
-      JOIN "Product" p ON p."id" = it."productId"
+      LEFT JOIN "Product" p ON p."id" = it."productId"
+      LEFT JOIN "Category" c ON c."id" = p."categoryId"
       WHERE i."status" = 'ACTIVE'
         AND i."date" >= ${from} AND i."date" <= ${to}
         AND it."isSample" = false
-      GROUP BY it."productId", p."code", p."name"
+      GROUP BY it."productId", p."code", p."name", c."unit"
     `,
     // Returns reduce sales and COGS in the period they happen (improvement 3).
     prisma.$queryRaw<AggRow[]>`
-      SELECT ci."productId", p."code", p."name",
-             SUM(ci."pieces")                          AS "qty",
-             SUM(ci."ratePaisa" * ci."quantity")       AS "revenue",
-             SUM(ci."unitCostPaisa" * ci."pieces")     AS "cogs"
+      SELECT ci."productId", p."code", p."name", COALESCE(c."unit", 'PIECE')::text AS "unit",
+             SUM(ci."qtyMilli")                          AS "qty",
+             SUM(ROUND(ci."qtyMilli"::numeric * ci."ratePaisa" / 1000))       AS "revenue",
+             SUM(ROUND(ci."qtyMilli"::numeric * ci."unitCostPaisa" / 1000))     AS "cogs"
       FROM "CreditNoteItem" ci
       JOIN "CreditNote" n ON n."id" = ci."creditNoteId"
-      JOIN "Product" p ON p."id" = ci."productId"
+      LEFT JOIN "Product" p ON p."id" = ci."productId"
+      LEFT JOIN "Category" c ON c."id" = p."categoryId"
       WHERE n."date" >= ${from} AND n."date" <= ${to}
-      GROUP BY ci."productId", p."code", p."name"
+      GROUP BY ci."productId", p."code", p."name", c."unit"
     `,
     // Free samples: no revenue, their cost is booked as marketing (DECISIONS §5).
     prisma.$queryRaw<{ cost: number | string }[]>`
-      SELECT COALESCE(SUM(it."unitCostPaisa" * it."pieces"), 0) AS "cost"
+      SELECT COALESCE(SUM(ROUND(it."qtyMilli"::numeric * it."unitCostPaisa" / 1000)), 0) AS "cost"
       FROM "InvoiceItem" it
       JOIN "Invoice" i ON i."id" = it."invoiceId"
       WHERE i."status" = 'ACTIVE'
@@ -114,13 +122,16 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
   const samplesCostPaisa = num(sampleAgg[0]?.cost);
   const perProductMap = new Map<string, ProductProfit>();
 
-  const entryFor = (r: AggRow) =>
-    perProductMap.get(r.productId) ??
+  const CUSTOM = "custom";
+  const keyOf = (r: AggRow) => r.productId ?? CUSTOM;
+  const entryFor = (r: AggRow): ProductProfit =>
+    perProductMap.get(keyOf(r)) ??
     {
       productId: r.productId,
-      code: r.code,
-      name: r.name,
-      qtyPieces: 0,
+      code: r.code ?? "—",
+      name: r.name ?? "Custom items (not from stock)",
+      unit: r.unit,
+      qtyMilli: r.productId ? 0 : null,
       revenuePaisa: 0,
       cogsPaisa: 0,
       profitPaisa: 0,
@@ -133,11 +144,11 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
     cogsPaisa += cost;
 
     const cur = entryFor(r);
-    cur.qtyPieces += num(r.qty);
+    if (cur.qtyMilli !== null) cur.qtyMilli += num(r.qty);
     cur.revenuePaisa += revenue;
     cur.cogsPaisa += cost;
     cur.profitPaisa = cur.revenuePaisa - cur.cogsPaisa;
-    perProductMap.set(r.productId, cur);
+    perProductMap.set(keyOf(r), cur);
   }
 
   // Subtract returns: revenue comes back off sales, and the goods come back into stock
@@ -149,11 +160,11 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
     cogsPaisa -= cost;
 
     const cur = entryFor(r);
-    cur.qtyPieces -= num(r.qty);
+    if (cur.qtyMilli !== null) cur.qtyMilli -= num(r.qty);
     cur.revenuePaisa -= revenue;
     cur.cogsPaisa -= cost;
     cur.profitPaisa = cur.revenuePaisa - cur.cogsPaisa;
-    perProductMap.set(r.productId, cur);
+    perProductMap.set(keyOf(r), cur);
   }
 
   const expensesPaisa = expenseAgg._sum.amountPaisa ?? 0;

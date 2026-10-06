@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { inputClass } from "@/components/ui";
+import { formatQtyUnit, type Unit } from "@/lib/qty";
 
 export type PickerProduct = {
   id: string;
@@ -9,7 +10,9 @@ export type PickerProduct = {
   name: string;
   size?: string | null;
   variant?: string | null;
-  stock?: number;
+  color?: string | null; // tells apart e.g. red and black wire of the same size
+  stock?: number; // thousandths of `unit`
+  unit?: Unit;
 };
 
 // Type-to-search product picker (improvement 4). Much faster than a long <select>,
@@ -38,7 +41,7 @@ export function ProductPicker({
     const words = q.split(/\s+/);
     return products
       .filter((p) => {
-        const hay = `${p.code} ${p.name} ${p.size ?? ""} ${p.variant ?? ""}`.toLowerCase();
+        const hay = `${p.code} ${p.name} ${p.size ?? ""} ${p.variant ?? ""} ${p.color ?? ""}`.toLowerCase();
         return words.every((w) => hay.includes(w));
       })
       .slice(0, 50);
@@ -78,7 +81,7 @@ export function ProductPicker({
   }
 
   const label = (p: PickerProduct) =>
-    `${p.name}${p.size ? " " + p.size : ""}${p.variant ? " · " + p.variant : ""}`;
+    `${p.name}${p.size ? " " + p.size : ""}${p.variant ? " · " + p.variant : ""}${p.color ? " · " + p.color : ""}`;
 
   return (
     <div className="relative" ref={boxRef}>
@@ -137,6 +140,7 @@ export function ProductPicker({
                   {p.code}
                   {p.size ? ` · ${p.size}` : ""}
                   {p.variant ? ` · ${p.variant}` : ""}
+                  {p.color ? ` · ${p.color}` : ""}
                 </span>
               </span>
               {typeof p.stock === "number" && (
@@ -149,7 +153,7 @@ export function ProductPicker({
                         : "text-ink-muted"
                   }`}
                 >
-                  {p.stock} pcs
+                  {formatQtyUnit(p.stock, p.unit)}
                 </span>
               )}
             </li>

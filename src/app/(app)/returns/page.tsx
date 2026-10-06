@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { sumLines } from "@/lib/receivables";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { formatPKR } from "@/lib/money";
@@ -39,7 +40,7 @@ export default async function ReturnsPage({
 
   const rows = notes.map((n) => ({
     n,
-    total: n.items.reduce((s, it) => s + it.ratePaisa * it.quantity, 0),
+    total: sumLines(n.items),
     key: group === "cust" ? n.customer.name : n.date.toLocaleDateString("en-PK"),
   }));
 

@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireOwnerPage } from "@/lib/guards";
 import { getStockMap } from "@/lib/stock";
+import { PRODUCT_UNIT } from "@/lib/products";
+import { fromMilli, unitOf } from "@/lib/qty";
 import { Button, Panel, PageHeader } from "@/components/ui";
 import { PurchaseBuilder } from "../../new/purchase-builder";
 import { DeletePurchase } from "../../delete-purchase";
@@ -26,6 +28,7 @@ export default async function EditPurchasePage({
     // hidden, otherwise their line would render with nothing selected.
     prisma.product.findMany({
       where: { OR: [{ active: true }, { id: { in: purchase.items.map((it) => it.productId) } }] },
+      include: PRODUCT_UNIT,
       orderBy: { code: "asc" },
     }),
     // The purchase's own supplier stays selectable even if it was later hidden.
@@ -56,7 +59,9 @@ export default async function EditPurchasePage({
           name: p.name,
           size: p.size,
           variant: p.variant,
+          color: p.color,
           stock: stock.get(p.id) ?? 0,
+          unit: unitOf(p),
           latestCostPaisa: p.latestCostPaisa,
         }))}
         suppliers={suppliers.map((s) => ({ id: s.id, name: s.name }))}
@@ -72,7 +77,7 @@ export default async function EditPurchasePage({
           notes: purchase.notes ?? "",
           lines: purchase.items.map((it) => ({
             productId: it.productId,
-            pieces: String(it.pieces),
+            qty: String(fromMilli(it.qtyMilli)),
             unitCostRs: String(it.supplierUnitCostPaisa / 100),
           })),
         }}

@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { listCategories } from "@/lib/products";
+import { fromMilli } from "@/lib/qty";
 import { PageHeader } from "@/components/ui";
 import { ProductForm } from "../../new/product-form";
 
@@ -30,10 +31,9 @@ export default async function EditProductPage({
           name: product.name,
           size: product.size,
           variant: product.variant,
-          category: product.category,
-          piecesPerBox: product.piecesPerBox,
-          piecesPerCarton: product.piecesPerCarton,
-          minStockLevel: product.minStockLevel,
+          color: product.color,
+          categoryId: product.categoryId,
+          minStock: fromMilli(product.minStockMilli),
           latestCostRs: product.latestCostPaisa / 100,
         }}
       />

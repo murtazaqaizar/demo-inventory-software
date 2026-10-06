@@ -59,11 +59,12 @@ const TAG = `vbill-${Date.now()}`;
 class Rollback extends Error {}
 type Tx = Prisma.TransactionClient;
 
-const line = (productId: string, over: Partial<Record<string, unknown>> = {}) => ({
+// Quantities are thousandths of the unit: 10_000 = 10 pieces.
+const line = (productId: string | null, over: Partial<Record<string, unknown>> = {}) => ({
   productId,
+  description: null as string | null,
   unit: "PIECE" as const,
-  quantity: 1,
-  pieces: 10,
+  qtyMilli: 10_000,
   ratePaisa: 15_000,
   unitCostPaisa: 10_000,
   isSample: false,
@@ -93,19 +94,42 @@ try {
       console.log("\n1. Stock leaving on a bill");
       await writeSaleStock(tx, invoice.id, [
         line(p1.id),
-        line(p2.id, { pieces: 4, isSample: true, ratePaisa: 0 }),
+        line(p2.id, { qtyMilli: 4_000, isSample: true, ratePaisa: 0 }),
       ]);
       const moves = await movementsFor(tx, invoice.id);
       check("one movement per line", moves.length, 2);
       check(
         "sale leaves stock, negative",
-        moves.filter((m) => m.type === "SALE_OUT").map((m) => m.piecesDelta),
-        [-10]
+        moves.filter((m) => m.type === "SALE_OUT").map((m) => m.qtyMilli),
+        [-10_000]
       );
       check(
         "a free sample is SAMPLE_OUT but still carries its cost",
-        moves.filter((m) => m.type === "SAMPLE_OUT").map((m) => [m.piecesDelta, m.unitCostPaisa]),
-        [[-4, 10_000]]
+        moves.filter((m) => m.type === "SAMPLE_OUT").map((m) => [m.qtyMilli, m.unitCostPaisa]),
+        [[-4_000, 10_000]]
+      );
+
+      // --- 1b. decimal quantity + custom line -------------------------------
+      console.log("\n1b. Decimal meters and a custom (outside-bought) line");
+      const wire = await tx.category.create({ data: { name: `${TAG} wire`, unit: "METER" } });
+      const p3 = await tx.product.create({ data: { code: `${TAG}-3`, name: `${TAG} wire`, categoryId: wire.id } });
+      const invW = await tx.invoice.create({ data: { customerId: customer.id } });
+      await writeSaleStock(tx, invW.id, [
+        line(p3.id, { unit: "METER", qtyMilli: 12_500, ratePaisa: 6_000 }),
+        line(null, { description: "Bought from market", qtyMilli: 2_000, ratePaisa: 95_000, unitCostPaisa: 80_000 }),
+      ]);
+      check(
+        "12.5 m leaves stock; the custom line moves nothing",
+        (await movementsFor(tx, invW.id)).map((m) => [m.productId === p3.id, m.qtyMilli]),
+        [[true, -12_500]]
+      );
+      await writeLastPrices(tx, customer.id, [
+        line(null, { description: "Bought from market", ratePaisa: 95_000 }),
+      ]);
+      check(
+        "a custom line is never remembered as a last price",
+        await tx.customerProductPrice.count({ where: { customerId: customer.id } }),
+        0
       );
 
       // --- 2. last-price memory --------------------------------------------
@@ -216,12 +240,13 @@ try {
       );
 
       await writeVoidRestock(tx, inv2.id, inv2.number, [
-        { productId: p1.id, pieces: 10, unitCostPaisa: 10_000 },
+        { productId: p1.id, qtyMilli: 10_000, unitCostPaisa: 10_000 },
+        { productId: null, qtyMilli: 2_000, unitCostPaisa: 80_000 }, // custom line: nothing to restock
       ]);
       check(
         "voided stock comes back in, positive",
-        (await movementsFor(tx, inv2.id)).map((m) => m.piecesDelta),
-        [10]
+        (await movementsFor(tx, inv2.id)).map((m) => m.qtyMilli),
+        [10_000]
       );
 
       // --- 7. cost is flat, not per line ------------------------------------
@@ -276,8 +301,8 @@ try {
       );
       check(
         "the sale's stock still leaves the shelf",
-        (await movementsFor(tx, inv3.id)).map((m) => m.piecesDelta),
-        [-10]
+        (await movementsFor(tx, inv3.id)).map((m) => m.qtyMilli),
+        [-10_000]
       );
       check(
         "the cash receipt is dated the same day",

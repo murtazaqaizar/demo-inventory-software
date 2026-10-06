@@ -3,9 +3,10 @@
 import { useActionState } from "react";
 import { recordMovement, type ActionResult } from "./actions";
 import { Button, Input, Select } from "@/components/ui";
+import { qtyStep, unitShort, type Unit } from "@/lib/qty";
 
 // One control for the three hand-entered stock movements (feature 6, 18 + adjust).
-export function StockAdjuster({ productId }: { productId: string }) {
+export function StockAdjuster({ productId, unit }: { productId: string; unit: Unit }) {
   const [state, formAction, pending] = useActionState(
     async (_prev: ActionResult, fd: FormData) => recordMovement(fd),
     { ok: false }
@@ -22,9 +23,10 @@ export function StockAdjuster({ productId }: { productId: string }) {
       <Input
         name="qty"
         type="number"
-        placeholder="pcs"
+        step={qtyStep(unit)}
+        placeholder={unitShort(unit)}
         className="w-20"
-        aria-label="Quantity in pieces"
+        aria-label={`Quantity in ${unitShort(unit)}`}
         required
       />
       <Button type="submit" variant="secondary" disabled={pending} className="px-3 py-2">

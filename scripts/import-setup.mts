@@ -58,12 +58,12 @@ const int = (v: string, d = 0) => {
 
 async function nextCode(): Promise<string> {
   const last = await prisma.product.findFirst({
-    where: { code: { startsWith: "ABR-" } },
+    where: { code: { startsWith: "PRD-" } },
     orderBy: { code: "desc" },
     select: { code: true },
   });
-  const n = last ? parseInt(last.code.replace("ABR-", ""), 10) || 0 : 0;
-  return `ABR-${String(n + 1).padStart(4, "0")}`;
+  const n = last ? parseInt(last.code.replace("PRD-", ""), 10) || 0 : 0;
+  return `PRD-${String(n + 1).padStart(4, "0")}`;
 }
 
 async function importProducts() {
@@ -88,12 +88,11 @@ async function importProducts() {
         name: r.name,
         size: r.size || null,
         variant: r.variant || null,
-        piecesPerBox: int(r.pieces_per_box, 1) || 1,
-        piecesPerCarton: int(r.pieces_per_carton, 0),
-        minStockLevel: int(r.min_stock, 0),
+        // Box/carton conversions were removed (client B, 2026-10-06); those CSV columns are ignored.
+        minStockMilli: int(r.min_stock, 0) * 1000,
         latestCostPaisa: cost,
         movements: opening > 0
-          ? { create: { type: "ADJUST", piecesDelta: opening, unitCostPaisa: cost, reason: "Opening stock (import)" } }
+          ? { create: { type: "ADJUST", qtyMilli: opening * 1000, unitCostPaisa: cost, reason: "Opening stock (import)" } }
           : undefined,
       },
     });

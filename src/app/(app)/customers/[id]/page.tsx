@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { sumLines } from "@/lib/receivables";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
@@ -64,7 +65,7 @@ export default async function CustomerStatementPage({
     ...invoices.map((inv) => ({
       date: inv.date,
       kind: `Bill #${inv.number}`,
-      debit: inv.items.reduce((s, it) => s + (it.isSample ? 0 : it.ratePaisa * it.quantity), 0),
+      debit: sumLines(inv.items),
       credit: inv.payments.reduce((s, p) => s + p.amountPaisa, 0),
     })),
     ...payments.map((p) => ({
@@ -77,7 +78,7 @@ export default async function CustomerStatementPage({
       date: cn.date,
       kind: `Return #${cn.number}`,
       debit: 0,
-      credit: cn.items.reduce((s, it) => s + it.ratePaisa * it.quantity, 0),
+      credit: sumLines(cn.items),
     })),
   ].sort((a, b) => a.date.getTime() - b.date.getTime());
 
@@ -112,7 +113,7 @@ export default async function CustomerStatementPage({
   // Per-bill breakdown (client request): every bill with what's paid and what's still owing.
   const bills = invoices
     .map((inv) => {
-      const total = inv.items.reduce((s, it) => s + (it.isSample ? 0 : it.ratePaisa * it.quantity), 0);
+      const total = sumLines(inv.items);
       const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0);
       return { id: inv.id, number: inv.number, date: inv.date, total, paid, owing: total - paid };
     })
@@ -122,7 +123,7 @@ export default async function CustomerStatementPage({
   const paidAtBilling = bills.reduce((s, b) => s + b.paid, 0);
   const lumpTotal = payments.reduce((s, p) => s + p.amountPaisa, 0);
   const returnsTotal = creditNotes.reduce(
-    (s, cn) => s + cn.items.reduce((t, it) => t + it.ratePaisa * it.quantity, 0),
+    (s, cn) => s + sumLines(cn.items),
     0
   );
   const oldestOwing = bills.filter((b) => b.owing > 0).at(-1);

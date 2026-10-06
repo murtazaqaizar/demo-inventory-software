@@ -9,19 +9,26 @@
 // bill must cost the same as a two-line one.
 
 import type { Prisma } from "@/generated/prisma/client";
-import type { SaleUnit, PaymentMethod } from "@/generated/prisma/enums";
+import type { PaymentMethod } from "@/generated/prisma/enums";
+import type { Unit } from "@/lib/qty";
 
 type Tx = Prisma.TransactionClient;
 
+// A stock line has a productId. A CUSTOM line (goods bought from outside for this
+// customer) has productId null and a description; it never touches stock or the
+// last-price memory, and its unitCostPaisa is whatever cost the user typed (0 = none).
 export type SaleLine = {
-  productId: string;
-  unit: SaleUnit;
-  quantity: number;
-  pieces: number;
-  ratePaisa: number;
-  unitCostPaisa: number;
+  productId: string | null;
+  description: string | null;
+  unit: Unit;
+  qtyMilli: number; // thousandths of the unit
+  ratePaisa: number; // per one unit
+  unitCostPaisa: number; // per one unit
   isSample: boolean;
 };
+
+type StockLine = SaleLine & { productId: string };
+const stockLines = (lines: SaleLine[]) => lines.filter((l): l is StockLine => l.productId !== null);
 
 export type PaymentInput = {
   method: PaymentMethod;
@@ -56,12 +63,13 @@ const accountKindFor = (method: PaymentMethod) => (method === "CASH" ? "CASH" : 
 // bill. So a backdated bill needs nothing here — `createdAt` stays honest about
 // when the row was written.
 export async function writeSaleStock(tx: Tx, invoiceId: string, lines: SaleLine[]) {
-  if (lines.length === 0) return;
+  const stocked = stockLines(lines);
+  if (stocked.length === 0) return;
   await tx.stockMovement.createMany({
-    data: lines.map((l) => ({
+    data: stocked.map((l) => ({
       productId: l.productId,
       type: l.isSample ? ("SAMPLE_OUT" as const) : ("SALE_OUT" as const),
-      piecesDelta: -l.pieces,
+      qtyMilli: -l.qtyMilli,
       unitCostPaisa: l.unitCostPaisa,
       reason: l.isSample ? "Free sample / bonus" : "Sale",
       invoiceId,
@@ -74,11 +82,11 @@ export async function writeSaleStock(tx: Tx, invoiceId: string, lines: SaleLine[
 // line must not become the customer's remembered price — and so is the walk-in
 // cash customer, who has no price history.
 export async function writeLastPrices(tx: Tx, customerId: string, lines: SaleLine[]) {
-  const priced = lines.filter((l) => !l.isSample);
+  const priced = stockLines(lines).filter((l) => !l.isSample);
   if (priced.length === 0) return;
 
   // A product can appear on more than one line; the last one entered wins.
-  const byProduct = new Map<string, SaleLine>();
+  const byProduct = new Map<string, StockLine>();
   for (const l of priced) byProduct.set(l.productId, l);
   const productIds = [...byProduct.keys()];
 
@@ -90,7 +98,6 @@ export async function writeLastPrices(tx: Tx, customerId: string, lines: SaleLin
       customerId,
       productId: l.productId,
       lastRatePaisa: l.ratePaisa,
-      lastUnit: l.unit,
     })),
   });
 }
@@ -215,14 +222,16 @@ export async function writeVoidRestock(
   tx: Tx,
   invoiceId: string,
   invoiceNumber: number,
-  items: { productId: string; pieces: number; unitCostPaisa: number }[]
+  items: { productId: string | null; qtyMilli: number; unitCostPaisa: number }[]
 ) {
-  if (items.length === 0) return;
+  // Custom lines were never in stock, so nothing comes back for them.
+  const stocked = items.filter((it): it is typeof it & { productId: string } => it.productId !== null);
+  if (stocked.length === 0) return;
   await tx.stockMovement.createMany({
-    data: items.map((it) => ({
+    data: stocked.map((it) => ({
       productId: it.productId,
       type: "ADJUST" as const,
-      piecesDelta: it.pieces, // positive = back into stock
+      qtyMilli: it.qtyMilli, // positive = back into stock
       unitCostPaisa: it.unitCostPaisa,
       reason: `Bill #${invoiceNumber} voided`,
       invoiceId,

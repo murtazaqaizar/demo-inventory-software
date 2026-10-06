@@ -2,6 +2,8 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { getStockMap } from "@/lib/stock";
+import { PRODUCT_UNIT } from "@/lib/products";
+import { fromMilli, unitOf } from "@/lib/qty";
 import { dateInputValue, todayInputValue } from "@/lib/dates";
 import { PageHeader } from "@/components/ui";
 import { BillingBuilder } from "../../new/billing-builder";
@@ -22,7 +24,7 @@ export default async function EditBillPage({
   if (invoice.status === "VOIDED") redirect("/billing");
 
   const [products, customers] = await Promise.all([
-    prisma.product.findMany({ where: { active: true }, orderBy: { code: "asc" } }),
+    prisma.product.findMany({ where: { active: true }, include: PRODUCT_UNIT, orderBy: { code: "asc" } }),
     prisma.customer.findMany({ where: { active: true }, orderBy: [{ isCashCustomer: "desc" }, { name: "asc" }] }),
   ]);
   const stock = await getStockMap(products.map((p) => p.id));
@@ -40,7 +42,9 @@ export default async function EditBillPage({
           name: p.name,
           size: p.size,
           variant: p.variant,
+          color: p.color,
           stock: stock.get(p.id) ?? 0,
+          unit: unitOf(p),
         }))}
         customers={customers.map((c) => ({ id: c.id, name: c.name, isCash: c.isCashCustomer }))}
         today={todayInputValue()}
@@ -51,9 +55,11 @@ export default async function EditBillPage({
           date: dateInputValue(invoice.date),
           lines: invoice.items.map((it) => ({
             productId: it.productId,
+            description: it.description,
             unit: it.unit,
-            quantity: it.quantity,
+            qty: fromMilli(it.qtyMilli),
             rateRs: it.ratePaisa / 100,
+            costRs: it.unitCostPaisa / 100,
             isSample: it.isSample,
           })),
           payments: invoice.payments.map((p) => ({ method: p.method as "CASH" | "CHEQUE" | "ONLINE", amountRs: p.amountPaisa / 100 })),

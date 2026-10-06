@@ -23,7 +23,7 @@ async function main() {
       continue; // genuinely unpaid — leave as outstanding
     }
     const total = inv.items.reduce(
-      (s, it) => s + (it.isSample ? 0 : it.ratePaisa * it.quantity),
+      (s, it) => s + (it.isSample ? 0 : Math.round((it.qtyMilli * it.ratePaisa) / 1000)),
       0
     );
     if (total <= 0) {

@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { formatQty, formatQtyUnit } from "@/lib/qty";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { getLowStock } from "@/lib/stock";
@@ -265,7 +266,7 @@ export default async function DashboardPage() {
                       </span>
                     </span>
                     <Badge tone="red">
-                      {p.qty} / {p.minStockLevel}
+                      {formatQty(p.qty)} / {formatQtyUnit(p.minStockMilli, p.unit)}
                     </Badge>
                   </RailListItem>
                 ))}

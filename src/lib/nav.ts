@@ -19,6 +19,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/billing", label: "Billing", section: "Sell", ownerOnly: false },
   { href: "/returns", label: "Returns", section: "Sell", ownerOnly: false },
   { href: "/products", label: "Products / Stock", section: "Stock", ownerOnly: false },
+  { href: "/categories", label: "Categories", section: "Stock", ownerOnly: false },
   { href: "/purchases", label: "Purchases", section: "Stock", ownerOnly: true },
   { href: "/aging", label: "Who owes me", section: "Money", ownerOnly: true },
   { href: "/customers", label: "Customers (Udhaar)", section: "Money", ownerOnly: false },

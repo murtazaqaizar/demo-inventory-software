@@ -2,7 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { createInvoice, editInvoice, getLastPrice } from "../actions";
+import { createInvoice, editInvoice, getLastPrice, type ShortStock } from "../actions";
 import {
   Button,
   Input,
@@ -14,19 +14,27 @@ import {
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
 import { formatPKR } from "@/lib/money";
+import { UNITS, formatQtyUnit, lineAmount, qtyStep, toMilli, unitLabel, unitShort, type Unit } from "@/lib/qty";
 
 type CustomerOpt = { id: string; name: string; isCash: boolean };
+// A "stock" line sells a product, in that product's unit. A "custom" line is free
+// text for goods bought from outside for this customer: it has its own unit and an
+// optional cost, and never touches stock.
 type Line = {
+  kind: "stock" | "custom";
   productId: string;
-  unit: "PIECE" | "BOX" | "CARTON";
-  quantity: string;
+  description: string;
+  unit: Unit; // custom lines only — a stock line uses its product's unit
+  qty: string;
   rateRs: string;
+  costRs: string; // custom lines only
   isSample: boolean;
   lastHint?: string | null;
 };
 type Pay = { method: "CASH" | "CHEQUE" | "ONLINE"; amountRs: string; chequeNumber: string; chequeBank: string; chequeDate: string };
 
-const emptyLine: Line = { productId: "", unit: "PIECE", quantity: "", rateRs: "", isSample: false };
+const emptyLine: Line = { kind: "stock", productId: "", description: "", unit: "PIECE", qty: "", rateRs: "", costRs: "", isSample: false };
+const emptyCustom: Line = { ...emptyLine, kind: "custom" };
 const emptyPay: Pay = { method: "CASH", amountRs: "", chequeNumber: "", chequeBank: "", chequeDate: "" };
 
 export type BillEdit = {
@@ -34,7 +42,15 @@ export type BillEdit = {
   number: number;
   customerId: string;
   date: string; // YYYY-MM-DD
-  lines: { productId: string; unit: "PIECE" | "BOX" | "CARTON"; quantity: number; rateRs: number; isSample: boolean }[];
+  lines: {
+    productId: string | null;
+    description: string | null;
+    unit: Unit;
+    qty: number; // in the unit (not thousandths)
+    rateRs: number;
+    costRs: number;
+    isSample: boolean;
+  }[];
   payments: { method: "CASH" | "CHEQUE" | "ONLINE"; amountRs: number }[];
 };
 
@@ -56,7 +72,7 @@ export function BillingBuilder({
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [belowCost, setBelowCost] = useState<string[] | null>(null);
-  const [shortStock, setShortStock] = useState<{ name: string; available: number; requested: number }[] | null>(null);
+  const [shortStock, setShortStock] = useState<ShortStock[] | null>(null);
   const [creditWarning, setCreditWarning] = useState<string | null>(null);
 
   const [customerId, setCustomerId] = useState(
@@ -68,10 +84,13 @@ export function BillingBuilder({
   const [lines, setLines] = useState<Line[]>(
     edit
       ? edit.lines.map((l) => ({
-          productId: l.productId,
+          kind: l.productId ? ("stock" as const) : ("custom" as const),
+          productId: l.productId ?? "",
+          description: l.description ?? "",
           unit: l.unit,
-          quantity: String(l.quantity),
+          qty: String(l.qty),
           rateRs: l.isSample ? "" : String(l.rateRs),
+          costRs: !l.productId && l.costRs ? String(l.costRs) : "",
           isSample: l.isSample,
         }))
       : [{ ...emptyLine }]
@@ -88,7 +107,7 @@ export function BillingBuilder({
     () =>
       lines.reduce((s, l) => {
         if (l.isSample) return s;
-        return s + Math.round((Number(l.rateRs) || 0) * 100) * (Number(l.quantity) || 0);
+        return s + lineAmount(toMilli(l.qty || 0) || 0, Math.round((Number(l.rateRs) || 0) * 100));
       }, 0),
     [lines]
   );
@@ -110,10 +129,10 @@ export function BillingBuilder({
     if (!productId || !customerId || selectedCustomer?.isCash) return;
     const last = await getLastPrice(customerId, productId);
     if (last) {
+      const unit = products.find((p) => p.id === productId)?.unit ?? "PIECE";
       updateLine(i, {
-        lastHint: `Last: Rs ${last.rateRs.toFixed(2)} / ${last.unit.toLowerCase()}`,
+        lastHint: `Last: Rs ${last.rateRs.toFixed(2)} / ${unitLabel(unit).toLowerCase()}`,
         rateRs: lines[i].rateRs || String(last.rateRs),
-        unit: last.unit as Line["unit"],
       });
     }
   }
@@ -128,16 +147,26 @@ export function BillingBuilder({
   function submit(ack: { belowCost?: boolean; shortStock?: boolean; overLimit?: boolean } = {}) {
     clearWarnings();
     const items = lines
-      .filter((l) => l.productId && Number(l.quantity) > 0)
-      .map((l) => ({
-        productId: l.productId,
-        unit: l.unit,
-        quantity: Number(l.quantity),
-        rateRs: l.isSample ? 0 : Number(l.rateRs) || 0,
-        isSample: l.isSample,
-      }));
+      .filter((l) => (l.kind === "stock" ? l.productId : l.description.trim()) && Number(l.qty) > 0)
+      .map((l) =>
+        l.kind === "stock"
+          ? {
+              productId: l.productId,
+              qty: Number(l.qty),
+              rateRs: l.isSample ? 0 : Number(l.rateRs) || 0,
+              isSample: l.isSample,
+            }
+          : {
+              description: l.description.trim(),
+              unit: l.unit,
+              qty: Number(l.qty),
+              rateRs: Number(l.rateRs) || 0,
+              costRs: Number(l.costRs) || undefined,
+              isSample: false,
+            }
+      );
     if (items.length === 0) {
-      setError("Add at least one line with a product and quantity.");
+      setError("Add at least one line with a product (or custom item name) and quantity.");
       return;
     }
     if (!customerId) {
@@ -225,73 +254,147 @@ export function BillingBuilder({
       <Panel pad>
         <div className="mb-3 flex items-center justify-between">
           <h2 className="font-semibold text-ink">Items</h2>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => setLines((p) => [...p, { ...emptyLine }])}
-            className="px-3 py-1.5"
-          >
-            + Add line
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setLines((p) => [...p, { ...emptyLine }])}
+              className="px-3 py-1.5"
+            >
+              + Add line
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => setLines((p) => [...p, { ...emptyCustom }])}
+              className="px-3 py-1.5"
+            >
+              + Custom item
+            </Button>
+          </div>
         </div>
 
         <div className="space-y-5">
-          {lines.map((l, i) => (
-            <div key={i} className="rounded-control border border-line p-3">
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_100px_90px_110px_auto] sm:items-center">
-                <ProductPicker
-                  products={products}
-                  value={l.productId}
-                  onChange={(id) => onProductChange(i, id)}
-                />
-                <Select
-                  value={l.unit}
-                  onChange={(e) => updateLine(i, { unit: e.target.value as Line["unit"] })}
-                  aria-label="Unit"
-                >
-                  <option value="PIECE">Piece</option>
-                  <option value="BOX">Box</option>
-                  <option value="CARTON">Carton</option>
-                </Select>
-                <Input
-                  type="number"
-                  min={1}
-                  placeholder="Qty"
-                  value={l.quantity}
-                  onChange={(e) => updateLine(i, { quantity: e.target.value })}
-                />
-                <Input
-                  type="number"
-                  min={0}
-                  step="0.01"
-                  placeholder="Rate Rs"
-                  value={l.isSample ? "" : l.rateRs}
-                  disabled={l.isSample}
-                  onChange={(e) => updateLine(i, { rateRs: e.target.value })}
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => setLines((p) => (p.length === 1 ? p : p.filter((_, x) => x !== i)))}
-                  className="px-3 py-2"
-                  disabled={lines.length === 1}
-                >
-                  ✕
-                </Button>
-              </div>
-              <div className="mt-2 flex items-center gap-4 text-xs">
-                <label className="flex items-center gap-1.5 text-ink-muted">
-                  <input
-                    type="checkbox"
-                    checked={l.isSample}
-                    onChange={(e) => updateLine(i, { isSample: e.target.checked })}
+          {lines.map((l, i) => {
+            const unit: Unit =
+              l.kind === "custom" ? l.unit : (products.find((p) => p.id === l.productId)?.unit ?? "PIECE");
+            const removeBtn = (
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => setLines((p) => (p.length === 1 ? p : p.filter((_, x) => x !== i)))}
+                className="px-3 py-2"
+                disabled={lines.length === 1}
+                aria-label="Remove line"
+              >
+                ✕
+              </Button>
+            );
+            const qtyInput = (
+              <Input
+                type="number"
+                min={0}
+                step={qtyStep(unit)}
+                placeholder={`Qty (${unitShort(unit)})`}
+                aria-label={`Quantity in ${unitShort(unit)}`}
+                value={l.qty}
+                onChange={(e) => updateLine(i, { qty: e.target.value })}
+              />
+            );
+            const rateInput = (
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                placeholder={`Rate/${unitShort(unit)} Rs`}
+                aria-label={`Rate per ${unitLabel(unit).toLowerCase()} in rupees`}
+                value={l.isSample ? "" : l.rateRs}
+                disabled={l.isSample}
+                onChange={(e) => updateLine(i, { rateRs: e.target.value })}
+              />
+            );
+
+            if (l.kind === "custom") {
+              return (
+                <div key={i} className="rounded-control border border-dashed border-line-strong p-3">
+                  <p className="mb-2 text-[13px] font-medium text-ink-muted">
+                    Custom item — not from stock (e.g. bought from outside for this customer)
+                  </p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_110px_100px_120px_auto] sm:items-center">
+                    <Input
+                      placeholder="Item name"
+                      aria-label="Custom item name"
+                      maxLength={120}
+                      value={l.description}
+                      onChange={(e) => updateLine(i, { description: e.target.value })}
+                    />
+                    <Select
+                      value={l.unit}
+                      onChange={(e) => updateLine(i, { unit: e.target.value as Unit })}
+                      aria-label="Unit"
+                    >
+                      {UNITS.map((u) => (
+                        <option key={u.value} value={u.value}>
+                          {u.label}
+                        </option>
+                      ))}
+                    </Select>
+                    {qtyInput}
+                    {rateInput}
+                    {removeBtn}
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                    <label htmlFor={`cost-${i}`} className="text-ink-muted">
+                      Your cost per {unitLabel(unit).toLowerCase()} (optional, for profit)
+                    </label>
+                    <div className="w-36">
+                      <Input
+                        id={`cost-${i}`}
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        placeholder="Rs"
+                        value={l.costRs}
+                        onChange={(e) => updateLine(i, { costRs: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                </div>
+              );
+            }
+
+            const product = products.find((p) => p.id === l.productId);
+            return (
+              <div key={i} className="rounded-control border border-line p-3">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_110px_120px_auto] sm:items-center">
+                  <ProductPicker
+                    products={products}
+                    value={l.productId}
+                    onChange={(id) => onProductChange(i, id)}
                   />
-                  Free sample / bonus
-                </label>
-                {l.lastHint && <span className="text-ink-muted">{l.lastHint}</span>}
+                  {qtyInput}
+                  {rateInput}
+                  {removeBtn}
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-4 text-xs">
+                  <label className="flex items-center gap-1.5 text-ink-muted">
+                    <input
+                      type="checkbox"
+                      checked={l.isSample}
+                      onChange={(e) => updateLine(i, { isSample: e.target.checked })}
+                    />
+                    Free sample / bonus
+                  </label>
+                  {product && typeof product.stock === "number" && (
+                    <span className="text-ink-muted">
+                      In stock: {formatQtyUnit(product.stock, product.unit)}
+                    </span>
+                  )}
+                  {l.lastHint && <span className="text-ink-muted">{l.lastHint}</span>}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
 
         <div className="mt-4 flex justify-between border-t border-line pt-4 text-base">
@@ -381,7 +484,8 @@ export function BillingBuilder({
           <ul className="mt-1 list-disc pl-5 text-[15px] text-bad">
             {shortStock.map((s) => (
               <li key={s.name}>
-                {s.name}: asking for {s.requested} pcs, only <strong>{s.available}</strong> in stock
+                {s.name}: asking for {formatQtyUnit(s.requested, s.unit)}, only{" "}
+                <strong>{formatQtyUnit(s.available, s.unit)}</strong> in stock
               </li>
             ))}
           </ul>

@@ -74,10 +74,10 @@ type Tx = Prisma.TransactionClient;
 
 async function stockOf(tx: Tx, productId: string) {
   const r = await tx.stockMovement.aggregate({
-    _sum: { piecesDelta: true },
+    _sum: { qtyMilli: true },
     where: { productId },
   });
-  return r._sum.piecesDelta ?? 0;
+  return (r._sum.qtyMilli ?? 0) / 1000; // in units
 }
 async function payableOf(tx: Tx, supplierId: string) {
   const rows = await tx.supplierLedgerEntry.findMany({ where: { supplierId } });
@@ -100,8 +100,8 @@ try {
       console.log("\n1. Create purchase (import, on credit)");
       const p1 = allocateLandedCost(
         [
-          { productId: a.id, pieces: 100, supplierUnitCostPaisa: 10_000 },
-          { productId: b.id, pieces: 50, supplierUnitCostPaisa: 20_000 },
+          { productId: a.id, qtyMilli: 100000, supplierUnitCostPaisa: 10_000 },
+          { productId: b.id, qtyMilli: 50000, supplierUnitCostPaisa: 20_000 },
         ],
         100_000 // Rs1,000 freight
       );
@@ -151,7 +151,7 @@ try {
       // --- 2. edit: A down to 60 pcs, B removed, no extras, no longer credit -
       console.log("\n2. Edit purchase (A 100→60, drop B, cash instead of credit)");
       const p2 = allocateLandedCost(
-        [{ productId: a.id, pieces: 60, supplierUnitCostPaisa: 10_000 }],
+        [{ productId: a.id, qtyMilli: 60000, supplierUnitCostPaisa: 10_000 }],
         0
       );
       await reversePurchaseEffects(tx, purchase);
@@ -183,42 +183,60 @@ try {
       // than anything else here. A product on both sides must net, not stack.
       console.log("\n3. Stock-delta map");
       check(
-        "delete: all pieces come back out",
-        [...stockDelta([{ productId: a.id, pieces: 60 }])],
-        [[a.id, -60]]
+        "delete: the whole quantity comes back out",
+        [...stockDelta([{ productId: a.id, qtyMilli: 60000 }])],
+        [[a.id, -60_000]]
       );
       check(
         "edit: A 100→60 nets −40, dropped B nets −50",
         [...stockDelta(
           [
-            { productId: a.id, pieces: 100 },
-            { productId: b.id, pieces: 50 },
+            { productId: a.id, qtyMilli: 100000 },
+            { productId: b.id, qtyMilli: 50000 },
           ],
-          [{ productId: a.id, pieces: 60 }]
+          [{ productId: a.id, qtyMilli: 60000 }]
         )],
         [
-          [a.id, -40],
-          [b.id, -50],
+          [a.id, -40_000],
+          [b.id, -50_000],
         ]
       );
       check(
         "edit: increasing a line nets positive (never blocks)",
-        [...stockDelta([{ productId: a.id, pieces: 60 }], [{ productId: a.id, pieces: 100 }])],
-        [[a.id, 40]]
+        [...stockDelta([{ productId: a.id, qtyMilli: 60000 }], [{ productId: a.id, qtyMilli: 100000 }])],
+        [[a.id, 40_000]]
       );
 
       // --- 4. negative-stock guard -----------------------------------------
       console.log("\n4. Negative-stock guard once the goods are sold");
       const sale = await tx.stockMovement.create({
-        data: { productId: a.id, type: "SALE_OUT", piecesDelta: -50, unitCostPaisa: 10_000 },
+        data: { productId: a.id, type: "SALE_OUT", qtyMilli: -50_000, unitCostPaisa: 10_000 },
       });
       check("stock A after selling 50", await stockOf(tx, a.id), 10);
-      const deleteDelta = stockDelta([{ productId: a.id, pieces: 60 }]);
+      const deleteDelta = stockDelta([{ productId: a.id, qtyMilli: 60000 }]);
       check("delete blocked, names the product", await findShortProducts(tx, deleteDelta), [
         `${TAG} product A`,
       ]);
       await tx.stockMovement.delete({ where: { id: sale.id } }); // un-sell for step 5
       check("guard allows delete once nothing is sold", await findShortProducts(tx, deleteDelta), []);
+
+      // --- 4b. decimal meters ----------------------------------------------
+      console.log("\n4b. Decimal quantity in meters");
+      const wire = await tx.category.create({ data: { name: `${TAG} wire`, unit: "METER" } });
+      const c = await tx.product.create({
+        data: { code: `${TAG}-C`, name: `${TAG} product C`, categoryId: wire.id },
+      });
+      // 250.5 m @ Rs12.34/m = Rs3,091.17 (250.5 × 1,234 = 309,117 paisa exactly)
+      const p3 = allocateLandedCost([{ productId: c.id, qtyMilli: 250_500, supplierUnitCostPaisa: 1_234 }], 25_050);
+      const meterPurchase = await tx.purchase.create({ data: { supplierId: supplier.id, freightPaisa: 25_050 } });
+      await applyPurchaseEffects(tx, meterPurchase, p3.lines, p3.totalValuePaisa);
+      await recomputeLatestCosts(tx, [c.id]);
+      check("stock C = 250.5 m", await stockOf(tx, c.id), 250.5);
+      check("goods value 250.5 x Rs12.34", p3.totalValuePaisa, 309_117);
+      // Rs250.50 freight over 250.5 m = +Rs1.00/m
+      check("landed cost per meter", (await tx.product.findUniqueOrThrow({ where: { id: c.id } })).latestCostPaisa, 1_334);
+      await reversePurchaseEffects(tx, meterPurchase);
+      await tx.purchase.delete({ where: { id: meterPurchase.id } });
 
       // --- 5. delete --------------------------------------------------------
       console.log("\n5. Delete purchase");
@@ -254,7 +272,7 @@ try {
           )
         );
         const alloc = allocateLandedCost(
-          prods.map((p) => ({ productId: p.id, pieces: 10, supplierUnitCostPaisa: 5_000 })),
+          prods.map((p) => ({ productId: p.id, qtyMilli: 10000, supplierUnitCostPaisa: 5_000 })),
           50_000
         );
         const pur = await tx.purchase.create({

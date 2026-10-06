@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { requireOwnerPage } from "@/lib/guards";
+import { PRODUCT_UNIT } from "@/lib/products";
+import { formatQtyTotals, lineAmount, unitOf } from "@/lib/qty";
 import { formatPKR } from "@/lib/money";
 import {
   Badge,
@@ -41,11 +43,11 @@ export default async function PurchasesPage({
     // Product names are pulled so each row can say what's actually in it —
     // two purchases from the same supplier on the same day look identical
     // otherwise.
-    include: { supplier: true, items: { include: { product: true } } },
+    include: { supplier: true, items: { include: { product: { include: PRODUCT_UNIT } } } },
   });
 
   const rows = purchases.map((p) => {
-    const goods = p.items.reduce((s, it) => s + it.supplierUnitCostPaisa * it.pieces, 0);
+    const goods = p.items.reduce((s, it) => s + lineAmount(it.qtyMilli, it.supplierUnitCostPaisa), 0);
     const extras = p.freightPaisa + p.dutyPaisa + p.clearingPaisa + p.transportPaisa;
     return {
       p,
@@ -125,7 +127,9 @@ export default async function PurchasesPage({
                     >
                       {g.items.map(({ p, goods, extras }) => {
                         const [first, ...rest] = p.items;
-                        const totalPieces = p.items.reduce((s, it) => s + it.pieces, 0);
+                        const totalQty = formatQtyTotals(
+                          p.items.map((it) => ({ qtyMilli: it.qtyMilli, unit: unitOf(it.product) }))
+                        );
                         return (
                           <tr key={p.id} className={rowClass}>
                             <td className={`${tdClass} font-mono`} data-label="No.">
@@ -161,7 +165,7 @@ export default async function PurchasesPage({
                                     <span className="text-ink-muted"> +{rest.length} more</span>
                                   )}
                                   <span className="block font-mono text-[13px] text-ink-muted">
-                                    {totalPieces} pcs in {p.items.length} line
+                                    {totalQty} in {p.items.length} line
                                     {p.items.length === 1 ? "" : "s"}
                                   </span>
                                 </>

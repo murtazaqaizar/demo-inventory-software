@@ -7,13 +7,14 @@
 // script exercise the real shipped code inside a rolled-back transaction.
 
 import type { Prisma } from "@/generated/prisma/client";
+import { MILLI, lineAmount } from "@/lib/qty";
 
 type Tx = Prisma.TransactionClient;
 
 export type PurchaseLineInput = {
   productId: string;
-  pieces: number;
-  supplierUnitCostPaisa: number;
+  qtyMilli: number; // thousandths of the product unit (src/lib/qty.ts)
+  supplierUnitCostPaisa: number; // per one unit
 };
 
 export type AllocatedLine = PurchaseLineInput & {
@@ -27,7 +28,7 @@ export function allocateLandedCost(
 ): { lines: AllocatedLine[]; totalValuePaisa: number } {
   const withValue = lines.map((l) => ({
     ...l,
-    lineValuePaisa: l.supplierUnitCostPaisa * l.pieces,
+    lineValuePaisa: lineAmount(l.qtyMilli, l.supplierUnitCostPaisa),
   }));
   const totalValuePaisa = withValue.reduce((s, l) => s + l.lineValuePaisa, 0);
 
@@ -37,7 +38,7 @@ export function allocateLandedCost(
         ? Math.round((extrasPaisa * l.lineValuePaisa) / totalValuePaisa)
         : Math.round(extrasPaisa / withValue.length);
     const landedUnitCostPaisa =
-      l.supplierUnitCostPaisa + (l.pieces > 0 ? Math.round(share / l.pieces) : 0);
+      l.supplierUnitCostPaisa + (l.qtyMilli > 0 ? Math.round((share * MILLI) / l.qtyMilli) : 0);
     return { ...l, landedUnitCostPaisa };
   });
 
@@ -113,7 +114,7 @@ export async function applyPurchaseEffects(
     data: computed.map((c) => ({
       purchaseId: purchase.id,
       productId: c.productId,
-      pieces: c.pieces,
+      qtyMilli: c.qtyMilli,
       supplierUnitCostPaisa: c.supplierUnitCostPaisa,
       landedUnitCostPaisa: c.landedUnitCostPaisa,
     })),
@@ -125,7 +126,7 @@ export async function applyPurchaseEffects(
     data: computed.map((c) => ({
       productId: c.productId,
       type: "PURCHASE_IN" as const,
-      piecesDelta: c.pieces,
+      qtyMilli: c.qtyMilli,
       unitCostPaisa: c.landedUnitCostPaisa,
       reason: "Purchase received",
       purchaseId: purchase.id,
@@ -146,20 +147,20 @@ export async function applyPurchaseEffects(
   }
 }
 
-// Net stock change per product when a purchase's lines change: the old pieces
-// come back out, the new pieces go in. A product on both sides nets out, which
+// Net stock change per product (thousandths) when a purchase's lines change: the
+// old quantity comes back out, the new quantity goes in. A product on both sides nets out, which
 // is why this is a map keyed by product and not a per-line diff. Pure, so the
 // sign convention can be tested directly — it feeds `findShortProducts`, whose
 // answer decides whether an edit or delete is allowed at all.
 //
 // Deleting a purchase is the same calculation with no new lines.
 export function stockDelta(
-  oldItems: { productId: string; pieces: number }[],
-  newLines: { productId: string; pieces: number }[] = []
+  oldItems: { productId: string; qtyMilli: number }[],
+  newLines: { productId: string; qtyMilli: number }[] = []
 ): Map<string, number> {
   const delta = new Map<string, number>();
-  for (const it of oldItems) delta.set(it.productId, (delta.get(it.productId) ?? 0) - it.pieces);
-  for (const l of newLines) delta.set(l.productId, (delta.get(l.productId) ?? 0) + l.pieces);
+  for (const it of oldItems) delta.set(it.productId, (delta.get(it.productId) ?? 0) - it.qtyMilli);
+  for (const l of newLines) delta.set(l.productId, (delta.get(l.productId) ?? 0) + l.qtyMilli);
   return delta;
 }
 
@@ -176,13 +177,13 @@ export async function findShortProducts(
   const [grouped, products] = await Promise.all([
     tx.stockMovement.groupBy({
       by: ["productId"],
-      _sum: { piecesDelta: true },
+      _sum: { qtyMilli: true },
       where: { productId: { in: ids } },
     }),
     tx.product.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }),
   ]);
 
-  const stock = new Map(grouped.map((g) => [g.productId, g._sum.piecesDelta ?? 0]));
+  const stock = new Map(grouped.map((g) => [g.productId, g._sum.qtyMilli ?? 0]));
   const names = new Map(products.map((p) => [p.id, p.name]));
 
   const short: string[] = [];

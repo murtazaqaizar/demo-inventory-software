@@ -2,13 +2,13 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { formatPKR } from "@/lib/money";
+import { formatQtyUnit } from "@/lib/qty";
+import { lineTotal, sumLines } from "@/lib/receivables";
 import { getBusinessSettings } from "@/lib/settings";
 import { contactLine, dateFieldOf, drawsTextHeader } from "@/lib/letterhead";
 import { PrintSheet } from "@/components/print-sheet";
 import { PrintButton } from "@/components/print-button";
 import { WhatsAppButton } from "@/components/whatsapp-button";
-
-const unitLabel = { PIECE: "pc", BOX: "box", CARTON: "carton" } as const;
 
 export default async function InvoicePrintPage({
   params,
@@ -26,10 +26,7 @@ export default async function InvoicePrintPage({
   });
   if (!invoice) notFound();
 
-  const total = invoice.items.reduce(
-    (s, it) => s + (it.isSample ? 0 : it.ratePaisa * it.quantity),
-    0
-  );
+  const total = sumLines(invoice.items);
 
   const paid = invoice.payments.reduce((s, p) => s + p.amountPaisa, 0);
   const owing = total - paid;
@@ -126,23 +123,24 @@ export default async function InvoicePrintPage({
             {invoice.items.map((it) => (
               <tr key={it.id} className="border-b border-line">
                 <td className="py-2">
-                  <span className="font-medium">{it.product.name}</span>{" "}
-                  <span className="text-ink-muted">
-                    {[it.product.size, it.product.variant].filter(Boolean).join(" · ")}
-                  </span>
+                  <span className="font-medium">{it.product?.name ?? it.description}</span>{" "}
+                  {it.product && (
+                    <span className="text-ink-muted">
+                      {[it.product.size, it.product.variant, it.product.color].filter(Boolean).join(" · ")}
+                    </span>
+                  )}
                   {it.isSample && (
                     <span className="ml-1 text-xs font-medium text-ok">(free sample)</span>
                   )}
                 </td>
                 <td className="py-2 text-right font-mono">
-                  {it.quantity} {unitLabel[it.unit]}
-                  {it.quantity > 1 ? "s" : ""}
+                  {formatQtyUnit(it.qtyMilli, it.unit)}
                 </td>
                 <td className="py-2 text-right font-mono">
                   {it.isSample ? "—" : formatPKR(it.ratePaisa)}
                 </td>
                 <td className="py-2 text-right font-mono">
-                  {it.isSample ? "Free" : formatPKR(it.ratePaisa * it.quantity)}
+                  {it.isSample ? "Free" : formatPKR(lineTotal(it))}
                 </td>
               </tr>
             ))}

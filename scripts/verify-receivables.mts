@@ -28,8 +28,10 @@ const prisma = new PrismaClient({
   }),
 });
 
-const sumLines = (items: { ratePaisa: number; quantity: number; isSample?: boolean }[]) =>
-  items.reduce((s, it) => s + (it.isSample ? 0 : it.ratePaisa * it.quantity), 0);
+// qtyMilli = thousandths of the unit; money rounds per line.
+const amt = (qtyMilli: number, ratePaisa: number) => Math.round((qtyMilli * ratePaisa) / 1000);
+const sumLines = (items: { ratePaisa: number; qtyMilli: number; isSample?: boolean }[]) =>
+  items.reduce((s, it) => s + (it.isSample ? 0 : amt(it.qtyMilli, it.ratePaisa)), 0);
 
 // --- OLD implementation, copied verbatim from git history --------------------
 
@@ -40,14 +42,14 @@ async function oldLedgers() {
       where: { status: "ACTIVE" },
       select: {
         customerId: true,
-        items: { select: { ratePaisa: true, quantity: true, isSample: true } },
+        items: { select: { ratePaisa: true, qtyMilli: true, isSample: true } },
         payments: { select: { amountPaisa: true } },
       },
     }),
     prisma.payment.groupBy({ by: ["customerId"], _sum: { amountPaisa: true } }),
     prisma.creditNote.findMany({
       where: { refundMethod: "CREDIT_TO_ACCOUNT" },
-      select: { customerId: true, items: { select: { ratePaisa: true, quantity: true } } },
+      select: { customerId: true, items: { select: { ratePaisa: true, qtyMilli: true } } },
     }),
   ]);
 
@@ -65,7 +67,7 @@ async function oldLedgers() {
   }
   for (const p of payments) bump(p.customerId, -(p._sum.amountPaisa ?? 0));
   for (const cn of creditNotes) {
-    bump(cn.customerId, -cn.items.reduce((s, it) => s + it.ratePaisa * it.quantity, 0));
+    bump(cn.customerId, -cn.items.reduce((s, it) => s + amt(it.qtyMilli, it.ratePaisa), 0));
   }
   return map;
 }
@@ -86,7 +88,7 @@ async function oldAging(asOf: Date) {
         id: true,
         customerId: true,
         date: true,
-        items: { select: { ratePaisa: true, quantity: true, isSample: true } },
+        items: { select: { ratePaisa: true, qtyMilli: true, isSample: true } },
         payments: { select: { amountPaisa: true } },
       },
       orderBy: { date: "asc" },
@@ -94,14 +96,14 @@ async function oldAging(asOf: Date) {
     prisma.payment.groupBy({ by: ["customerId"], _sum: { amountPaisa: true } }),
     prisma.creditNote.findMany({
       where: { refundMethod: "CREDIT_TO_ACCOUNT" },
-      select: { customerId: true, items: { select: { ratePaisa: true, quantity: true } } },
+      select: { customerId: true, items: { select: { ratePaisa: true, qtyMilli: true } } },
     }),
   ]);
 
   const unallocated = new Map<string, number>();
   for (const p of payments) unallocated.set(p.customerId, p._sum.amountPaisa ?? 0);
   for (const cn of creditNotes) {
-    const amt = cn.items.reduce((s, it) => s + it.ratePaisa * it.quantity, 0);
+    const amt = cn.items.reduce((s, it) => s + amt(it.qtyMilli, it.ratePaisa), 0);
     unallocated.set(cn.customerId, (unallocated.get(cn.customerId) ?? 0) + amt);
   }
 

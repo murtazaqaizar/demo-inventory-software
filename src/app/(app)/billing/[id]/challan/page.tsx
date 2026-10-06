@@ -2,11 +2,10 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { getBusinessSettings } from "@/lib/settings";
+import { formatQtyTotals, formatQtyUnit } from "@/lib/qty";
 import { contactLine, dateFieldOf, drawsTextHeader } from "@/lib/letterhead";
 import { PrintSheet } from "@/components/print-sheet";
 import { PrintButton } from "@/components/print-button";
-
-const unitLabel = { PIECE: "pc", BOX: "box", CARTON: "carton" } as const;
 
 // Delivery challan / gate pass (spec feature 17): goods leaving the premises, no prices.
 export default async function ChallanPage({
@@ -25,7 +24,7 @@ export default async function ChallanPage({
   });
   if (!invoice) notFound();
 
-  const totalPieces = invoice.items.reduce((s, it) => s + it.pieces, 0);
+  const totalQty = formatQtyTotals(invoice.items);
 
   return (
     <div>
@@ -76,31 +75,29 @@ export default async function ChallanPage({
             <tr className="border-b border-line-strong text-left text-ink-muted">
               <th className="py-2">Item</th>
               <th className="py-2 text-right font-mono">Quantity</th>
-              <th className="py-2 text-right font-mono">Pieces</th>
             </tr>
           </thead>
           <tbody>
             {invoice.items.map((it) => (
               <tr key={it.id} className="border-b border-line">
                 <td className="py-2">
-                  <span className="font-medium">{it.product.name}</span>{" "}
-                  <span className="text-ink-muted">
-                    {[it.product.size, it.product.variant].filter(Boolean).join(" · ")}
-                  </span>
+                  <span className="font-medium">{it.product?.name ?? it.description}</span>{" "}
+                  {it.product && (
+                    <span className="text-ink-muted">
+                      {[it.product.size, it.product.variant, it.product.color].filter(Boolean).join(" · ")}
+                    </span>
+                  )}
                 </td>
                 <td className="py-2 text-right font-mono">
-                  {it.quantity} {unitLabel[it.unit]}
-                  {it.quantity > 1 ? "s" : ""}
+                  {formatQtyUnit(it.qtyMilli, it.unit)}
                 </td>
-                <td className="py-2 text-right font-mono">{it.pieces}</td>
               </tr>
             ))}
           </tbody>
           <tfoot>
             <tr className="border-t border-line-strong font-semibold">
-              <td className="py-2">Total pieces</td>
-              <td></td>
-              <td className="py-2 text-right font-mono">{totalPieces}</td>
+              <td className="py-2">Total</td>
+              <td className="py-2 text-right font-mono">{totalQty}</td>
             </tr>
           </tfoot>
         </table>

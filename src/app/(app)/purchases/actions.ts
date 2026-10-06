@@ -16,6 +16,7 @@ import {
   stockDelta,
 } from "@/lib/purchasing";
 import { audit } from "@/lib/audit";
+import { qtyError, toMilli, type Unit } from "@/lib/qty";
 
 // `purchaseId` is returned on create so the form can send you straight to the
 // new purchase's detail page instead of back to the list.
@@ -28,7 +29,7 @@ export type ActionResult = {
 
 const itemSchema = z.object({
   productId: z.string().min(1),
-  pieces: z.coerce.number().int().positive(),
+  qty: z.coerce.number().positive("Quantity must be more than zero"), // in the product's unit
   unitCostRs: z.coerce.number().min(0),
 });
 
@@ -57,11 +58,28 @@ function computeLines(d: z.infer<typeof purchaseSchema>) {
   return allocateLandedCost(
     d.items.map((it) => ({
       productId: it.productId,
-      pieces: it.pieces,
+      qtyMilli: toMilli(it.qty),
       supplierUnitCostPaisa: rupeesToPaisa(it.unitCostRs),
     })),
     extrasPaisa
   );
+}
+
+// Each line's quantity must suit its product's unit: whole pieces, up to 3 decimals
+// for meter/feet. Returns an error message naming the product, or null.
+async function lineUnitError(items: { productId: string; qty: number }[]): Promise<string | null> {
+  const products = await prisma.product.findMany({
+    where: { id: { in: items.map((i) => i.productId) } },
+    select: { id: true, name: true, category: { select: { unit: true } } },
+  });
+  const byId = new Map(products.map((p) => [p.id, p]));
+  for (const it of items) {
+    const p = byId.get(it.productId);
+    if (!p) return "A product on this purchase no longer exists";
+    const e = qtyError(toMilli(it.qty), (p.category?.unit as Unit | undefined) ?? "PIECE");
+    if (e) return `${p.name}: ${e}`;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +98,8 @@ export async function createPurchase(input: unknown): Promise<ActionResult> {
     if (d.onCredit && !d.supplierId) {
       return { ok: false, error: "Credit purchases need a supplier." };
     }
+    const unitErr = await lineUnitError(d.items);
+    if (unitErr) return { ok: false, error: unitErr };
 
     const { lines: computed, totalValuePaisa: totalValue } = computeLines(d);
 
@@ -131,6 +151,8 @@ export async function updatePurchase(input: unknown): Promise<ActionResult> {
     if (d.onCredit && !d.supplierId) {
       return { ok: false, error: "Credit purchases need a supplier." };
     }
+    const unitErr = await lineUnitError(d.items);
+    if (unitErr) return { ok: false, error: unitErr };
 
     const existing = await prisma.purchase.findUnique({
       where: { id: d.purchaseId },

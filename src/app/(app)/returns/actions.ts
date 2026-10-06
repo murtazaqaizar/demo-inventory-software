@@ -7,18 +7,23 @@ import { safeAction } from "@/lib/action-errors";
 import { TX_OPTIONS } from "@/lib/tx";
 import { requireUserApi } from "@/lib/guards";
 import { rupeesToPaisa, formatPKR } from "@/lib/money";
-import { piecesFor } from "@/lib/stock";
+import { PRODUCT_UNIT } from "@/lib/products";
+import { lineAmount, qtyError, toMilli, unitOf, type Unit } from "@/lib/qty";
 import { audit } from "@/lib/audit";
 
 export type ReturnResult =
   | { ok: true; creditNoteId: string; number: number }
   | { ok: false; error?: string };
 
+// Stock line (productId set): goods come back onto the shelf, in the product's unit.
+// Custom line (productId blank): credits a free-text bill line — money only, never stock.
 const itemSchema = z.object({
-  productId: z.string().min(1),
-  unit: z.enum(["PIECE", "BOX", "CARTON"]).default("PIECE"),
-  quantity: z.coerce.number().int().positive(),
+  productId: z.string().optional(),
+  description: z.string().trim().max(120).optional(),
+  unit: z.enum(["PIECE", "METER", "FEET"]).default("PIECE"), // custom lines only
+  qty: z.coerce.number().positive("Quantity must be more than zero"),
   rateRs: z.coerce.number().min(0).default(0),
+  costRs: z.coerce.number().min(0).optional(), // custom lines only
 });
 
 const schema = z.object({
@@ -39,27 +44,53 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid input" };
     const d = parsed.data;
 
-    const products = await prisma.product.findMany({
-      where: { id: { in: d.items.map((i) => i.productId) } },
-    });
+    const ids = d.items.map((i) => i.productId).filter((id): id is string => Boolean(id));
+    const products = await prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_UNIT });
     const byId = new Map(products.map((p) => [p.id, p]));
-    if (d.items.some((i) => !byId.has(i.productId))) {
-      return { ok: false, error: "Unknown product on a line." };
-    }
 
     const customer = await prisma.customer.findUnique({ where: { id: d.customerId } });
     if (!customer) return { ok: false, error: "Customer not found." };
 
-    const lines = d.items.map((it) => {
-      const product = byId.get(it.productId)!;
-      return {
-        ...it,
-        pieces: piecesFor(it.unit, it.quantity, product),
-        ratePaisa: rupeesToPaisa(it.rateRs),
-        unitCostPaisa: product.latestCostPaisa,
-      };
-    });
-    const total = lines.reduce((s, l) => s + l.ratePaisa * l.quantity, 0);
+    type Line = {
+      productId: string | null;
+      description: string | null;
+      unit: Unit;
+      qtyMilli: number;
+      ratePaisa: number;
+      unitCostPaisa: number;
+    };
+    const lines: Line[] = [];
+    for (const it of d.items) {
+      const qtyMilli = toMilli(it.qty);
+      if (it.productId) {
+        const product = byId.get(it.productId);
+        if (!product) return { ok: false, error: "Unknown product on a line." };
+        const unit = unitOf(product);
+        const e = qtyError(qtyMilli, unit);
+        if (e) return { ok: false, error: `${product.name}: ${e}` };
+        lines.push({
+          productId: product.id,
+          description: null,
+          unit,
+          qtyMilli,
+          ratePaisa: rupeesToPaisa(it.rateRs),
+          unitCostPaisa: product.latestCostPaisa,
+        });
+      } else {
+        if (!it.description) return { ok: false, error: "A custom item needs a name." };
+        const e = qtyError(qtyMilli, it.unit);
+        if (e) return { ok: false, error: `${it.description}: ${e}` };
+        lines.push({
+          productId: null,
+          description: it.description,
+          unit: it.unit,
+          qtyMilli,
+          ratePaisa: rupeesToPaisa(it.rateRs),
+          unitCostPaisa: it.costRs ? rupeesToPaisa(it.costRs) : 0,
+        });
+      }
+    }
+    const total = lines.reduce((s, l) => s + lineAmount(l.qtyMilli, l.ratePaisa), 0);
 
     const result = await prisma.$transaction(async (tx) => {
       const note = await tx.creditNote.create({
@@ -69,26 +100,19 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
           refundMethod: d.refundMethod,
           reason: d.reason || null,
           createdById: user.id,
-          items: {
-            create: lines.map((l) => ({
-              productId: l.productId,
-              unit: l.unit,
-              quantity: l.quantity,
-              pieces: l.pieces,
-              ratePaisa: l.ratePaisa,
-              unitCostPaisa: l.unitCostPaisa,
-            })),
-          },
+          items: { create: lines },
         },
       });
 
       // Goods come back into stock at the cost they left at. One insert for every
       // line — a create per line is what blew the transaction limit on purchases.
-      await tx.stockMovement.createMany({
-        data: lines.map((l) => ({
+      // Custom lines were never in stock, so only product lines come back.
+      const stocked = lines.filter((l): l is Line & { productId: string } => l.productId !== null);
+      if (stocked.length > 0) await tx.stockMovement.createMany({
+        data: stocked.map((l) => ({
           productId: l.productId,
           type: "RETURN_IN" as const,
-          piecesDelta: l.pieces,
+          qtyMilli: l.qtyMilli,
           unitCostPaisa: l.unitCostPaisa,
           reason: `Return — credit note #${note.number}`,
           creditNoteId: note.id,

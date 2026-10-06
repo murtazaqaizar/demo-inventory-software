@@ -39,30 +39,26 @@ async function main() {
 
   // --- A couple of sample products to prove reads/writes (spec features 1-3) -
   await prisma.product.upsert({
-    where: { code: "ABR-0001" },
+    where: { code: "PRD-0001" },
     update: {},
     create: {
-      code: "ABR-0001",
+      code: "PRD-0001",
       name: "Cutting Disc",
       size: "4 inch",
       variant: "1.0mm - Brand A",
-      piecesPerBox: 25,
-      piecesPerCarton: 200,
-      minStockLevel: 50,
+      minStockMilli: 50_000, // 50 pieces (thousandths)
       latestCostPaisa: 4500, // Rs 45.00 / piece
     },
   });
   await prisma.product.upsert({
-    where: { code: "ABR-0002" },
+    where: { code: "PRD-0002" },
     update: {},
     create: {
-      code: "ABR-0002",
+      code: "PRD-0002",
       name: "Grinding Disc",
       size: "4 inch",
       variant: "6.0mm - Brand B",
-      piecesPerBox: 10,
-      piecesPerCarton: 100,
-      minStockLevel: 20,
+      minStockMilli: 20_000, // 20 pieces
       latestCostPaisa: 9000, // Rs 90.00 / piece
     },
   });

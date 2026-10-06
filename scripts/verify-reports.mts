@@ -37,27 +37,30 @@ const eq = (label: string, a: unknown, b: unknown) => {
   }
 };
 
+// Quantities are thousandths of the unit; a line's money is rounded per line.
+const amt = (qtyMilli: number, ratePaisa: number) => Math.round((qtyMilli * ratePaisa) / 1000);
+
 // --- OLD: low stock ---------------------------------------------------------
 
 async function oldLowStock() {
   const products = await prisma.product.findMany({ where: { active: true } });
   const grouped = await prisma.stockMovement.groupBy({
     by: ["productId"],
-    _sum: { piecesDelta: true },
+    _sum: { qtyMilli: true },
     where: { productId: { in: products.map((p) => p.id) } },
   });
-  const stock = new Map(grouped.map((g) => [g.productId, g._sum.piecesDelta ?? 0]));
+  const stock = new Map(grouped.map((g) => [g.productId, g._sum.qtyMilli ?? 0]));
   return products
     .map((p) => ({ ...p, qty: stock.get(p.id) ?? 0 }))
-    .filter((p) => p.qty <= p.minStockLevel)
-    .sort((a, b) => a.qty - a.minStockLevel - (b.qty - b.minStockLevel))
-    .map((p) => ({ id: p.id, qty: p.qty, minStockLevel: p.minStockLevel }));
+    .filter((p) => p.qty <= p.minStockMilli)
+    .sort((a, b) => a.qty - a.minStockMilli - (b.qty - b.minStockMilli))
+    .map((p) => ({ id: p.id, qty: p.qty, minStockMilli: p.minStockMilli }));
 }
 
 // --- OLD: sales totals ------------------------------------------------------
 
-const sumLines = (items: { ratePaisa: number; quantity: number; isSample: boolean }[]) =>
-  items.reduce((s, it) => s + (it.isSample ? 0 : it.ratePaisa * it.quantity), 0);
+const sumLines = (items: { ratePaisa: number; qtyMilli: number; isSample: boolean }[]) =>
+  items.reduce((s, it) => s + (it.isSample ? 0 : amt(it.qtyMilli, it.ratePaisa)), 0);
 
 async function oldSalesTotals(p: {
   startToday: Date;
@@ -65,7 +68,7 @@ async function oldSalesTotals(p: {
   startLastMonth: Date;
   endLastMonth: Date;
 }) {
-  const sel = { items: { select: { ratePaisa: true, quantity: true, isSample: true } } };
+  const sel = { items: { select: { ratePaisa: true, qtyMilli: true, isSample: true } } };
   const [today, month, lastMonth] = await Promise.all([
     prisma.invoice.findMany({ where: { status: "ACTIVE", date: { gte: p.startToday } }, select: sel }),
     prisma.invoice.findMany({ where: { status: "ACTIVE", date: { gte: p.startMonth } }, select: sel }),
@@ -74,7 +77,7 @@ async function oldSalesTotals(p: {
       select: sel,
     }),
   ]);
-  const sum = (rows: { items: { ratePaisa: number; quantity: number; isSample: boolean }[] }[]) =>
+  const sum = (rows: { items: { ratePaisa: number; qtyMilli: number; isSample: boolean }[] }[]) =>
     rows.reduce((s, r) => s + sumLines(r.items), 0);
   return { today: sum(today), month: sum(month), lastMonth: sum(lastMonth) };
 }
@@ -85,11 +88,11 @@ async function oldIncomeStatement(from: Date, to: Date) {
   const [items, returnItems, expenseAgg] = await Promise.all([
     prisma.invoiceItem.findMany({
       where: { invoice: { date: { gte: from, lte: to }, status: "ACTIVE" } },
-      include: { product: { select: { code: true, name: true } } },
+      include: { product: { select: { code: true, name: true, category: { select: { unit: true } } } } },
     }),
     prisma.creditNoteItem.findMany({
       where: { creditNote: { date: { gte: from, lte: to } } },
-      include: { product: { select: { code: true, name: true } } },
+      include: { product: { select: { code: true, name: true, category: { select: { unit: true } } } } },
     }),
     prisma.expense.aggregate({ _sum: { amountPaisa: true }, where: { date: { gte: from, lte: to } } }),
   ]);
@@ -98,48 +101,57 @@ async function oldIncomeStatement(from: Date, to: Date) {
   let cogsPaisa = 0;
   let samplesCostPaisa = 0;
   type ProductRow = {
-    productId: string;
+    productId: string | null;
     code: string;
     name: string;
-    qtyPieces: number;
+    unit: string;
+    qtyMilli: number | null;
     revenuePaisa: number;
     cogsPaisa: number;
     profitPaisa: number;
   };
   const map = new Map<string, ProductRow>();
+  // Custom (free-text) lines have no product: they share one row with no quantity.
+  const rowFor = (it: { productId: string | null; product: { code: string; name: string; category: { unit: string } | null } | null }) =>
+    map.get(it.productId ?? "custom") ?? {
+      productId: it.productId,
+      code: it.product?.code ?? "—",
+      name: it.product?.name ?? "Custom items (not from stock)",
+      unit: it.product?.category?.unit ?? "PIECE",
+      qtyMilli: it.productId ? 0 : null,
+      revenuePaisa: 0,
+      cogsPaisa: 0,
+      profitPaisa: 0,
+    };
 
   for (const it of items) {
-    const lineCost = it.unitCostPaisa * it.pieces;
+    const lineCost = amt(it.qtyMilli, it.unitCostPaisa);
     if (it.isSample) {
       samplesCostPaisa += lineCost;
       continue;
     }
-    const lineRevenue = it.ratePaisa * it.quantity;
+    const lineRevenue = amt(it.qtyMilli, it.ratePaisa);
     salesPaisa += lineRevenue;
     cogsPaisa += lineCost;
-    const cur =
-      map.get(it.productId) ??
-      { productId: it.productId, code: it.product.code, name: it.product.name, qtyPieces: 0, revenuePaisa: 0, cogsPaisa: 0, profitPaisa: 0 };
-    cur.qtyPieces += it.pieces;
+    const cur = rowFor(it);
+    if (cur.qtyMilli !== null) cur.qtyMilli += it.qtyMilli;
     cur.revenuePaisa += lineRevenue;
     cur.cogsPaisa += lineCost;
     cur.profitPaisa = cur.revenuePaisa - cur.cogsPaisa;
-    map.set(it.productId, cur);
+    map.set(it.productId ?? "custom", cur);
   }
 
   for (const r of returnItems) {
-    const lineRevenue = r.ratePaisa * r.quantity;
-    const lineCost = r.unitCostPaisa * r.pieces;
+    const lineRevenue = amt(r.qtyMilli, r.ratePaisa);
+    const lineCost = amt(r.qtyMilli, r.unitCostPaisa);
     salesPaisa -= lineRevenue;
     cogsPaisa -= lineCost;
-    const cur =
-      map.get(r.productId) ??
-      { productId: r.productId, code: r.product.code, name: r.product.name, qtyPieces: 0, revenuePaisa: 0, cogsPaisa: 0, profitPaisa: 0 };
-    cur.qtyPieces -= r.pieces;
+    const cur = rowFor(r);
+    if (cur.qtyMilli !== null) cur.qtyMilli -= r.qtyMilli;
     cur.revenuePaisa -= lineRevenue;
     cur.cogsPaisa -= lineCost;
     cur.profitPaisa = cur.revenuePaisa - cur.cogsPaisa;
-    map.set(r.productId, cur);
+    map.set(r.productId ?? "custom", cur);
   }
 
   const expensesPaisa = expenseAgg._sum.amountPaisa ?? 0;
@@ -164,20 +176,20 @@ async function main() {
   // (the new query adds a name tiebreak), so compare as a keyed map plus the count.
   const oldLow = await oldLowStock();
   const newLowRaw = await getLowStock();
-  const newLow = newLowRaw.map((p) => ({ id: p.id, qty: p.qty, minStockLevel: p.minStockLevel }));
+  const newLow = newLowRaw.map((p) => ({ id: p.id, qty: p.qty, minStockMilli: p.minStockMilli }));
   // Sort the pairs before comparing: JSON.stringify on an object is sensitive to
   // insertion order, so the keyed map alone still failed whenever several
   // products tied (e.g. every one of them at 0 stock / 0 minimum) and the two
   // implementations happened to emit them in a different order.
   const key = (rows: typeof oldLow) =>
-    rows.map((r) => `${r.id}=${r.qty}/${r.minStockLevel}`).sort();
+    rows.map((r) => `${r.id}=${r.qty}/${r.minStockMilli}`).sort();
   eq("lowStock membership", key(oldLow), key(newLow));
   eq("lowStock count", oldLow.length, newLow.length);
   // Sort order must still put the most-short product first.
   eq(
     "lowStock ordering (by shortfall)",
-    oldLow.map((r) => r.qty - r.minStockLevel),
-    newLow.map((r) => r.qty - r.minStockLevel)
+    oldLow.map((r) => r.qty - r.minStockMilli),
+    newLow.map((r) => r.qty - r.minStockMilli)
   );
 
   // Sales totals, using the dashboard's own period maths.
@@ -204,8 +216,8 @@ async function main() {
     eq(`incomeStatement[${label}] statement`, o.statement, n.statement);
     eq(
       `incomeStatement[${label}] perProduct`,
-      o.perProduct.map((p) => [p.productId, p.qtyPieces, p.revenuePaisa, p.cogsPaisa, p.profitPaisa]),
-      n.perProduct.map((p) => [p.productId, p.qtyPieces, p.revenuePaisa, p.cogsPaisa, p.profitPaisa])
+      o.perProduct.map((p) => [p.productId, p.unit, p.qtyMilli, p.revenuePaisa, p.cogsPaisa, p.profitPaisa]),
+      n.perProduct.map((p) => [p.productId, p.unit, p.qtyMilli, p.revenuePaisa, p.cogsPaisa, p.profitPaisa])
     );
   }
 

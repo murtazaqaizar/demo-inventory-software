@@ -44,6 +44,7 @@ const ORDER = [
   "supplierLedgerEntry",
   "supplier",
   "product",
+  "category", // after product: products point at it
   "moneyMovement",
   "moneyAccount",
   "expense",

@@ -4,24 +4,44 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { safeAction } from "@/lib/action-errors";
-import { nextProductCode, resolveCategory } from "@/lib/products";
+import { nextProductCode } from "@/lib/products";
 import { requireUserApi, requireOwnerApi } from "@/lib/guards";
 import { rupeesToPaisa } from "@/lib/money";
 import { audit } from "@/lib/audit";
+import { formatQtyUnit, qtyError, toMilli, unitLabel, type Unit } from "@/lib/qty";
 
-const productSchema = z.object({
-  name: z.string().min(1, "Name is required"),
+// Quantities arrive as typed text ("16000", "2.5") in the category's unit and are
+// stored as thousandths (src/lib/qty.ts). Blank = 0.
+const qtyText = z.string().optional().transform((s) => (s && s.trim() ? toMilli(s) : 0));
+
+const productFields = {
+  name: z.string().trim().min(1, "Name is required"),
   size: z.string().optional(),
   variant: z.string().optional(),
-  category: z.string().optional(),
-  piecesPerBox: z.coerce.number().int().min(1).default(1),
-  piecesPerCarton: z.coerce.number().int().min(0).default(0),
-  minStockLevel: z.coerce.number().int().min(0).default(0),
-  initialStock: z.coerce.number().int().min(0).default(0),
+  color: z.string().optional(),
+  categoryId: z.string().optional(),
+  minStock: qtyText,
+};
+
+const productSchema = z.object({
+  ...productFields,
+  initialStock: qtyText,
   initialCostRs: z.coerce.number().min(0).default(0),
 });
 
 export type ActionResult = { ok: boolean; error?: string; message?: string };
+
+// The unit a product is counted in comes from its category; none = by the piece.
+async function unitForCategory(categoryId: string | null): Promise<Unit> {
+  if (!categoryId) return "PIECE";
+  const c = await prisma.category.findUnique({ where: { id: categoryId }, select: { unit: true } });
+  return (c?.unit as Unit | undefined) ?? "PIECE";
+}
+
+function clean(s: string | undefined) {
+  const t = (s ?? "").trim();
+  return t ? t : null;
+}
 
 export async function createProduct(formData: FormData): Promise<ActionResult> {
   return safeAction(async () => {
@@ -31,18 +51,26 @@ export async function createProduct(formData: FormData): Promise<ActionResult> {
       return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid input" };
     }
     const d = parsed.data;
-    const code = await nextProductCode();
+    const categoryId = clean(d.categoryId);
+    const unit = await unitForCategory(categoryId);
 
+    if (d.initialStock) {
+      const e = qtyError(d.initialStock, unit);
+      if (e) return { ok: false, error: `Opening stock: ${e}` };
+    }
+    const minErr = qtyError(d.minStock, unit, { allowZero: true });
+    if (minErr) return { ok: false, error: `Low-stock level: ${minErr}` };
+
+    const code = await nextProductCode();
     await prisma.product.create({
       data: {
         code,
         name: d.name,
-        size: d.size || null,
-        variant: d.variant || null,
-        category: await resolveCategory(d.category),
-        piecesPerBox: d.piecesPerBox,
-        piecesPerCarton: d.piecesPerCarton,
-        minStockLevel: d.minStockLevel,
+        size: clean(d.size),
+        variant: clean(d.variant),
+        color: clean(d.color),
+        categoryId,
+        minStockMilli: d.minStock,
         latestCostPaisa: rupeesToPaisa(d.initialCostRs),
         // First stock count (spec feature 34 note) recorded as an ADJUST movement.
         movements:
@@ -50,7 +78,7 @@ export async function createProduct(formData: FormData): Promise<ActionResult> {
             ? {
                 create: {
                   type: "ADJUST",
-                  piecesDelta: d.initialStock,
+                  qtyMilli: d.initialStock,
                   unitCostPaisa: rupeesToPaisa(d.initialCostRs),
                   reason: "Opening stock count",
                 },
@@ -61,45 +89,13 @@ export async function createProduct(formData: FormData): Promise<ActionResult> {
 
     revalidatePath("/products");
     return { ok: true };
-}, (error) => ({ ok: false, error }));
-}
-
-const adjustSchema = z.object({
-  productId: z.string().min(1),
-  delta: z.coerce.number().int(),
-  reason: z.string().optional(),
-});
-
-// Manual stock correction (ADJUST). Can be positive or negative.
-export async function adjustStock(formData: FormData): Promise<ActionResult> {
-  return safeAction(async () => {
-    await requireUserApi();
-    const parsed = adjustSchema.safeParse(Object.fromEntries(formData));
-    if (!parsed.success) return { ok: false, error: "Invalid input" };
-    const { productId, delta, reason } = parsed.data;
-    if (delta === 0) return { ok: false, error: "Enter a non-zero quantity" };
-
-    const product = await prisma.product.findUnique({ where: { id: productId } });
-    if (!product) return { ok: false, error: "Product not found" };
-
-    await prisma.stockMovement.create({
-      data: {
-        productId,
-        type: "ADJUST",
-        piecesDelta: delta,
-        unitCostPaisa: product.latestCostPaisa,
-        reason: reason || "Manual adjustment",
-      },
-    });
-    revalidatePath("/products");
-    return { ok: true };
-}, (error) => ({ ok: false, error }));
+  }, (error) => ({ ok: false, error }));
 }
 
 const movementSchema = z.object({
   productId: z.string().min(1),
   kind: z.enum(["ADJUST", "RETURN_IN", "SAMPLE_OUT"]),
-  qty: z.coerce.number().int(),
+  qty: z.string().min(1, "Enter a quantity"),
   reason: z.string().optional(),
 });
 
@@ -113,13 +109,20 @@ export async function recordMovement(formData: FormData): Promise<ActionResult> 
     const parsed = movementSchema.safeParse(Object.fromEntries(formData));
     if (!parsed.success) return { ok: false, error: "Invalid input" };
     const { productId, kind, qty, reason } = parsed.data;
-    if (qty === 0) return { ok: false, error: "Enter a non-zero quantity" };
 
-    const product = await prisma.product.findUnique({ where: { id: productId } });
+    const product = await prisma.product.findUnique({
+      where: { id: productId },
+      include: { category: { select: { unit: true } } },
+    });
     if (!product) return { ok: false, error: "Product not found" };
+    const unit = (product.category?.unit as Unit | undefined) ?? "PIECE";
+
+    const milli = toMilli(qty);
+    const e = qtyError(Math.abs(milli), unit);
+    if (e) return { ok: false, error: e };
 
     const delta =
-      kind === "RETURN_IN" ? Math.abs(qty) : kind === "SAMPLE_OUT" ? -Math.abs(qty) : qty;
+      kind === "RETURN_IN" ? Math.abs(milli) : kind === "SAMPLE_OUT" ? -Math.abs(milli) : milli;
 
     const defaultReason =
       kind === "RETURN_IN" ? "Customer return" : kind === "SAMPLE_OUT" ? "Free sample / bonus" : "Manual adjustment";
@@ -128,7 +131,7 @@ export async function recordMovement(formData: FormData): Promise<ActionResult> 
       data: {
         productId,
         type: kind,
-        piecesDelta: delta,
+        qtyMilli: delta,
         // cost captured so profit stays honest even on samples/returns (feature 18)
         unitCostPaisa: product.latestCostPaisa,
         reason: reason || defaultReason,
@@ -140,25 +143,19 @@ export async function recordMovement(formData: FormData): Promise<ActionResult> 
       "STOCK_MOVEMENT",
       "Product",
       productId,
-      `${defaultReason}: ${delta > 0 ? "+" : ""}${delta} pcs of ${product.name}${reason ? ` — ${reason}` : ""}`
+      `${defaultReason}: ${delta > 0 ? "+" : "−"}${formatQtyUnit(Math.abs(delta), unit)} of ${product.name}${reason ? ` — ${reason}` : ""}`
     );
 
     revalidatePath("/products");
     revalidatePath("/");
     return { ok: true };
-}, (error) => ({ ok: false, error }));
+  }, (error) => ({ ok: false, error }));
 }
 
 // --- Edit an existing product (client request) ----------------------------
 const editSchema = z.object({
   productId: z.string().min(1),
-  name: z.string().min(1, "Name is required"),
-  size: z.string().optional(),
-  variant: z.string().optional(),
-  category: z.string().optional(),
-  piecesPerBox: z.coerce.number().int().min(1).default(1),
-  piecesPerCarton: z.coerce.number().int().min(0).default(0),
-  minStockLevel: z.coerce.number().int().min(0).default(0),
+  ...productFields,
   latestCostRs: z.coerce.number().min(0).optional(),
 });
 
@@ -169,19 +166,39 @@ export async function updateProduct(formData: FormData): Promise<ActionResult> {
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message ?? "Invalid input" };
     const d = parsed.data;
 
-    const existing = await prisma.product.findUnique({ where: { id: d.productId } });
+    const existing = await prisma.product.findUnique({
+      where: { id: d.productId },
+      include: { category: { select: { unit: true } } },
+    });
     if (!existing) return { ok: false, error: "Product not found" };
+
+    const categoryId = clean(d.categoryId);
+    const oldUnit = (existing.category?.unit as Unit | undefined) ?? "PIECE";
+    const newUnit = await unitForCategory(categoryId);
+
+    // Moving to a category with a different unit would reinterpret the stock already
+    // counted (200 pieces would become 200 m). Only allowed before any stock moves.
+    if (newUnit !== oldUnit) {
+      const history = await prisma.stockMovement.count({ where: { productId: d.productId } });
+      if (history > 0) {
+        return {
+          ok: false,
+          error: `This product's stock is counted in ${unitLabel(oldUnit).toLowerCase()}s, so it can only move to a category with the same unit. Add a new product for the ${unitLabel(newUnit).toLowerCase()} version instead.`,
+        };
+      }
+    }
+    const minErr = qtyError(d.minStock, newUnit, { allowZero: true });
+    if (minErr) return { ok: false, error: `Low-stock level: ${minErr}` };
 
     await prisma.product.update({
       where: { id: d.productId },
       data: {
         name: d.name,
-        size: d.size || null,
-        variant: d.variant || null,
-        category: await resolveCategory(d.category),
-        piecesPerBox: d.piecesPerBox,
-        piecesPerCarton: d.piecesPerCarton,
-        minStockLevel: d.minStockLevel,
+        size: clean(d.size),
+        variant: clean(d.variant),
+        color: clean(d.color),
+        categoryId,
+        minStockMilli: d.minStock,
         // Only the owner may change cost; staff edits leave it untouched.
         ...(user.role === "OWNER" && d.latestCostRs !== undefined
           ? { latestCostPaisa: rupeesToPaisa(d.latestCostRs) }
@@ -192,7 +209,7 @@ export async function updateProduct(formData: FormData): Promise<ActionResult> {
     await audit({ id: user.id, username: user.username }, "PRODUCT_EDIT", "Product", d.productId, `Edited product ${existing.code} — ${d.name}`);
     revalidatePath("/products");
     return { ok: true };
-}, (error) => ({ ok: false, error }));
+  }, (error) => ({ ok: false, error }));
 }
 
 // --- Delete a product -----------------------------------------------------
@@ -225,24 +242,5 @@ export async function deleteProduct(formData: FormData): Promise<ActionResult> {
     await audit({ id: user.id, username: user.username }, "PRODUCT_DELETE", "Product", productId, `Deleted product ${product.code} — ${product.name}`);
     revalidatePath("/products");
     return { ok: true, message: `${product.name} deleted.` };
-}, (error) => ({ ok: false, error }));
-}
-
-const minSchema = z.object({
-  productId: z.string().min(1),
-  minStockLevel: z.coerce.number().int().min(0),
-});
-
-export async function setMinLevel(formData: FormData): Promise<ActionResult> {
-  return safeAction(async () => {
-    await requireOwnerApi();
-    const parsed = minSchema.safeParse(Object.fromEntries(formData));
-    if (!parsed.success) return { ok: false, error: "Invalid input" };
-    await prisma.product.update({
-      where: { id: parsed.data.productId },
-      data: { minStockLevel: parsed.data.minStockLevel },
-    });
-    revalidatePath("/products");
-    return { ok: true };
-}, (error) => ({ ok: false, error }));
+  }, (error) => ({ ok: false, error }));
 }

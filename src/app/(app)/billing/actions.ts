@@ -8,7 +8,9 @@ import { TX_OPTIONS } from "@/lib/tx";
 import { requireUserApi, requireOwnerApi } from "@/lib/guards";
 import { rupeesToPaisa, formatPKR } from "@/lib/money";
 import { dateFromInput } from "@/lib/dates";
-import { piecesFor, getStockMap } from "@/lib/stock";
+import { getStockMap } from "@/lib/stock";
+import { PRODUCT_UNIT } from "@/lib/products";
+import { lineAmount, qtyError, toMilli, unitOf, type Unit } from "@/lib/qty";
 import { getCustomerBalance } from "@/lib/receivables";
 import { audit } from "@/lib/audit";
 import {
@@ -18,6 +20,7 @@ import {
   writeSaleStock,
   writeVoidRestock,
   type PaymentInput,
+  type SaleLine,
 } from "@/lib/billing-effects";
 
 
@@ -40,15 +43,23 @@ export type InvoiceResult =
       ok: false;
       error?: string;
       belowCost?: string[];
-      shortStock?: { name: string; available: number; requested: number }[];
+      shortStock?: ShortStock[];
       creditWarning?: string;
     };
 
+// Quantities on the stock check are thousandths of the product's unit.
+export type ShortStock = { name: string; unit: Unit; available: number; requested: number };
+
+// A line is either a stock line (productId set) or a CUSTOM line: free text for
+// goods bought from outside for this customer (productId blank, description set).
+// qty is in the line's unit and may have decimals for meter/feet.
 const itemSchema = z.object({
-  productId: z.string().min(1),
-  unit: z.enum(["PIECE", "BOX", "CARTON"]).default("PIECE"),
-  quantity: z.coerce.number().int().positive(),
+  productId: z.string().optional(),
+  description: z.string().trim().max(120).optional(),
+  unit: z.enum(["PIECE", "METER", "FEET"]).default("PIECE"), // custom lines only; stock lines use the product's
+  qty: z.coerce.number().positive("Quantity must be more than zero"),
   rateRs: z.coerce.number().min(0).default(0),
+  costRs: z.coerce.number().min(0).optional(), // custom lines only: what it cost you
   isSample: z.boolean().default(false),
 });
 
@@ -79,14 +90,100 @@ const invoiceSchema = z.object({
 export async function getLastPrice(
   customerId: string,
   productId: string
-): Promise<{ rateRs: number; unit: string } | null> {
+): Promise<{ rateRs: number } | null> {
   await requireUserApi();
   const row = await prisma.customerProductPrice.findUnique({
     where: { customerId_productId: { customerId, productId } },
   });
   if (!row) return null;
-  return { rateRs: row.lastRatePaisa / 100, unit: row.lastUnit };
+  return { rateRs: row.lastRatePaisa / 100 };
 }
+
+type BuiltLine = SaleLine & { name: string };
+
+// Resolve form lines into stored lines: unit from the product's category (or the
+// custom line's own pick), quantity checked against that unit, cost captured.
+async function buildLines(
+  items: z.infer<typeof itemSchema>[]
+): Promise<{ lines: BuiltLine[] } | { error: string }> {
+  const ids = items.map((i) => i.productId).filter((id): id is string => Boolean(id));
+  const products = await prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_UNIT });
+  const byId = new Map(products.map((p) => [p.id, p]));
+
+  const lines: BuiltLine[] = [];
+  for (const it of items) {
+    const qtyMilli = toMilli(it.qty);
+    const ratePaisa = it.isSample ? 0 : rupeesToPaisa(it.rateRs);
+    if (it.productId) {
+      const product = byId.get(it.productId);
+      if (!product) return { error: "Unknown product on a line." };
+      const unit = unitOf(product);
+      const e = qtyError(qtyMilli, unit);
+      if (e) return { error: `${product.name}: ${e}` };
+      lines.push({
+        productId: product.id,
+        description: null,
+        unit,
+        qtyMilli,
+        ratePaisa,
+        unitCostPaisa: product.latestCostPaisa,
+        isSample: it.isSample,
+        name: product.name,
+      });
+    } else {
+      if (!it.description) return { error: "A custom item needs a name." };
+      const e = qtyError(qtyMilli, it.unit);
+      if (e) return { error: `${it.description}: ${e}` };
+      lines.push({
+        productId: null,
+        description: it.description,
+        unit: it.unit,
+        qtyMilli,
+        ratePaisa,
+        unitCostPaisa: it.costRs ? rupeesToPaisa(it.costRs) : 0,
+        isSample: it.isSample,
+        name: it.description,
+      });
+    }
+  }
+  return { lines };
+}
+
+const billTotal = (lines: { qtyMilli: number; ratePaisa: number; isSample: boolean }[]) =>
+  lines.reduce((s, l) => s + (l.isSample ? 0 : lineAmount(l.qtyMilli, l.ratePaisa)), 0);
+
+// Rate below cost (feature 15). Custom lines count only when a cost was typed.
+const belowCostNames = (lines: BuiltLine[]) =>
+  lines.filter((l) => !l.isSample && l.unitCostPaisa > 0 && l.ratePaisa < l.unitCostPaisa).map((l) => l.name);
+
+// Stock lines asking for more than is on the shelf. `returning` = quantity the old
+// version of an edited bill is about to put back.
+async function findShortStock(lines: BuiltLine[], returning = new Map<string, number>()): Promise<ShortStock[]> {
+  const needed = new Map<string, { name: string; unit: Unit; total: number }>();
+  for (const l of lines) {
+    if (!l.productId) continue;
+    const prev = needed.get(l.productId);
+    needed.set(l.productId, { name: l.name, unit: l.unit, total: (prev?.total ?? 0) + l.qtyMilli });
+  }
+  const stock = await getStockMap([...needed.keys()]);
+  const short: ShortStock[] = [];
+  for (const [productId, l] of needed) {
+    const available = (stock.get(productId) ?? 0) + (returning.get(productId) ?? 0);
+    if (l.total > available) short.push({ name: l.name, unit: l.unit, available, requested: l.total });
+  }
+  return short;
+}
+
+const itemRows = (lines: BuiltLine[]) =>
+  lines.map((l) => ({
+    productId: l.productId,
+    description: l.description,
+    unit: l.unit,
+    qtyMilli: l.qtyMilli,
+    ratePaisa: l.ratePaisa,
+    unitCostPaisa: l.unitCostPaisa,
+    isSample: l.isSample,
+  }));
 
 export async function createInvoice(input: unknown): Promise<InvoiceResult> {
   return safeAction(async () => {
@@ -97,54 +194,26 @@ export async function createInvoice(input: unknown): Promise<InvoiceResult> {
     }
     const d = parsed.data;
 
-    const products = await prisma.product.findMany({
-      where: { id: { in: d.items.map((i) => i.productId) } },
-    });
-    const byId = new Map(products.map((p) => [p.id, p]));
-    if (d.items.some((i) => !byId.has(i.productId))) {
-      return { ok: false, error: "Unknown product on a line." };
-    }
-
-    const lines = d.items.map((it) => {
-      const product = byId.get(it.productId)!;
-      const pieces = piecesFor(it.unit, it.quantity, product);
-      const ratePaisa = it.isSample ? 0 : rupeesToPaisa(it.rateRs);
-      return { ...it, product, pieces, ratePaisa, unitCostPaisa: product.latestCostPaisa };
-    });
+    const built = await buildLines(d.items);
+    if ("error" in built) return { ok: false, error: built.error };
+    const { lines } = built;
 
     // --- Improvement 1: don't let stock go negative silently ------------------
     if (!d.confirmShortStock) {
-      const stock = await getStockMap(lines.map((l) => l.productId));
-      const needed = new Map<string, number>();
-      for (const l of lines) {
-        needed.set(l.productId, (needed.get(l.productId) ?? 0) + l.pieces);
-      }
-      const shortStock: { name: string; available: number; requested: number }[] = [];
-      for (const [productId, requested] of needed) {
-        const available = stock.get(productId) ?? 0;
-        if (requested > available) {
-          shortStock.push({ name: byId.get(productId)!.name, available, requested });
-        }
-      }
+      const shortStock = await findShortStock(lines);
       if (shortStock.length > 0) return { ok: false, shortStock };
     }
 
     // --- Below-cost warning (feature 15), checked server-side so staff never see cost
     if (!d.confirmBelowCost) {
-      const below = lines
-        .filter((l) => !l.isSample && l.unitCostPaisa > 0)
-        .filter((l) => {
-          const perPiece = l.pieces > 0 ? (l.ratePaisa * l.quantity) / l.pieces : 0;
-          return perPiece < l.unitCostPaisa;
-        })
-        .map((l) => l.product.name);
+      const below = belowCostNames(lines);
       if (below.length > 0) return { ok: false, belowCost: below };
     }
 
     const customer = await prisma.customer.findUnique({ where: { id: d.customerId } });
     if (!customer) return { ok: false, error: "Customer not found." };
 
-    const total = lines.reduce((s, l) => s + l.ratePaisa * l.quantity, 0);
+    const total = billTotal(lines);
     const receivedPaisa = d.payments.reduce((s, p) => s + rupeesToPaisa(p.amountRs), 0);
     if (receivedPaisa > total) {
       return { ok: false, error: "Payments are more than the bill total." };
@@ -182,17 +251,7 @@ export async function createInvoice(input: unknown): Promise<InvoiceResult> {
           notes: d.notes || null,
           createdById: user.id,
           ...(billDate ? { date: billDate } : {}),
-          items: {
-            create: lines.map((l) => ({
-              productId: l.productId,
-              unit: l.unit,
-              quantity: l.quantity,
-              pieces: l.pieces,
-              ratePaisa: l.ratePaisa,
-              unitCostPaisa: l.unitCostPaisa,
-              isSample: l.isSample,
-            })),
-          },
+          items: { create: itemRows(lines) },
         },
       });
 
@@ -252,55 +311,36 @@ export async function editInvoice(input: unknown): Promise<InvoiceResult> {
     if (!old) return { ok: false, error: "Bill not found" };
     if (old.status === "VOIDED") return { ok: false, error: "A voided bill cannot be edited" };
 
-    const products = await prisma.product.findMany({ where: { id: { in: d.items.map((i) => i.productId) } } });
-    const byId = new Map(products.map((p) => [p.id, p]));
-    if (d.items.some((i) => !byId.has(i.productId))) return { ok: false, error: "Unknown product on a line." };
+    const built = await buildLines(d.items);
+    if ("error" in built) return { ok: false, error: built.error };
+    const { lines } = built;
 
-    const lines = d.items.map((it) => {
-      const product = byId.get(it.productId)!;
-      return {
-        ...it,
-        product,
-        pieces: piecesFor(it.unit, it.quantity, product),
-        ratePaisa: it.isSample ? 0 : rupeesToPaisa(it.rateRs),
-        unitCostPaisa: product.latestCostPaisa,
-      };
-    });
-
-    // Stock check: the old bill's pieces are about to return, so credit them back.
+    // Stock check: the old bill's quantities are about to return, so credit them back.
     if (!d.confirmShortStock) {
-      const stock = await getStockMap(lines.map((l) => l.productId));
-      const oldByProduct = new Map<string, number>();
-      for (const it of old.items) oldByProduct.set(it.productId, (oldByProduct.get(it.productId) ?? 0) + it.pieces);
-      const needed = new Map<string, number>();
-      for (const l of lines) needed.set(l.productId, (needed.get(l.productId) ?? 0) + l.pieces);
-      const shortStock: { name: string; available: number; requested: number }[] = [];
-      for (const [productId, requested] of needed) {
-        const available = (stock.get(productId) ?? 0) + (oldByProduct.get(productId) ?? 0);
-        if (requested > available) shortStock.push({ name: byId.get(productId)!.name, available, requested });
+      const returning = new Map<string, number>();
+      for (const it of old.items) {
+        if (it.productId) returning.set(it.productId, (returning.get(it.productId) ?? 0) + it.qtyMilli);
       }
+      const shortStock = await findShortStock(lines, returning);
       if (shortStock.length > 0) return { ok: false, shortStock };
     }
 
     if (!d.confirmBelowCost) {
-      const below = lines
-        .filter((l) => !l.isSample && l.unitCostPaisa > 0)
-        .filter((l) => (l.pieces > 0 ? (l.ratePaisa * l.quantity) / l.pieces : 0) < l.unitCostPaisa)
-        .map((l) => l.product.name);
+      const below = belowCostNames(lines);
       if (below.length > 0) return { ok: false, belowCost: below };
     }
 
     const customer = await prisma.customer.findUnique({ where: { id: d.customerId } });
     if (!customer) return { ok: false, error: "Customer not found." };
 
-    const newTotal = lines.reduce((s, l) => s + l.ratePaisa * l.quantity, 0);
+    const newTotal = billTotal(lines);
     const receivedPaisa = d.payments.reduce((s, p) => s + rupeesToPaisa(p.amountRs), 0);
     if (receivedPaisa > newTotal) return { ok: false, error: "Payments are more than the bill total." };
     const udhaarPaisa = newTotal - receivedPaisa;
 
     // Credit limit: swap the old bill's outstanding for the new one.
     if (!d.confirmOverLimit && udhaarPaisa > 0 && customer.creditLimitPaisa > 0 && !customer.isCashCustomer) {
-      const oldTotal = old.items.reduce((s, it) => s + (it.isSample ? 0 : it.ratePaisa * it.quantity), 0);
+      const oldTotal = billTotal(old.items);
       const oldPaid = old.payments.reduce((s, p) => s + p.amountPaisa, 0);
       const current = await getCustomerBalance(customer.id);
       const projected = current - (oldTotal - oldPaid) + udhaarPaisa;
@@ -344,17 +384,7 @@ export async function editInvoice(input: unknown): Promise<InvoiceResult> {
           method: primaryMethod,
           notes: d.notes || null,
           date: newDate,
-          items: {
-            create: lines.map((l) => ({
-              productId: l.productId,
-              unit: l.unit,
-              quantity: l.quantity,
-              pieces: l.pieces,
-              ratePaisa: l.ratePaisa,
-              unitCostPaisa: l.unitCostPaisa,
-              isSample: l.isSample,
-            })),
-          },
+          items: { create: itemRows(lines) },
         },
       });
 

@@ -49,6 +49,7 @@ async function main() {
   await prisma.customerProductPrice.deleteMany();
   await prisma.customer.deleteMany();
   await prisma.product.deleteMany();
+  await prisma.category.deleteMany();
   await prisma.expense.deleteMany();
 
   const products = await Promise.all(
@@ -57,10 +58,8 @@ async function main() {
         data: {
           code: `P${String(i + 1).padStart(4, "0")}`,
           name: `Product ${i + 1}`,
-          piecesPerBox: 12,
-          piecesPerCarton: 144,
           // Spread thresholds so some products land at/below minimum and some don't.
-          minStockLevel: int(0, 60),
+          minStockMilli: int(0, 60) * 1000,
           latestCostPaisa: int(5_000, 40_000),
         },
       })
@@ -106,8 +105,7 @@ async function main() {
         return {
           productId: p.id,
           unit: "PIECE" as const,
-          quantity,
-          pieces: quantity,
+          qtyMilli: quantity * 1000,
           ratePaisa: rate,
           unitCostPaisa: p.latestCostPaisa,
           // Sample lines are zero-rated — they must not appear as a charge.
@@ -115,7 +113,7 @@ async function main() {
         };
       });
 
-      const total = lines.reduce((t, l) => t + (l.isSample ? 0 : l.ratePaisa * l.quantity), 0);
+      const total = lines.reduce((t, l) => t + (l.isSample ? 0 : (l.ratePaisa * l.qtyMilli) / 1000), 0);
       const paidNow = s.payInFull
         ? total
         : s.splitPay && total > 0
@@ -170,8 +168,7 @@ async function main() {
               {
                 productId: p.id,
                 unit: "PIECE",
-                quantity,
-                pieces: quantity,
+                qtyMilli: quantity * 1000,
                 ratePaisa: int(8_000, 60_000),
                 unitCostPaisa: p.latestCostPaisa,
               },
@@ -196,7 +193,7 @@ async function main() {
         status: "ACTIVE",
         items: {
           create: [
-            { productId: p.id, unit: "PIECE", quantity: 3, pieces: 3, ratePaisa: 25_000, unitCostPaisa: p.latestCostPaisa },
+            { productId: p.id, unit: "PIECE", qtyMilli: 3_000, ratePaisa: 25_000, unitCostPaisa: p.latestCostPaisa },
           ],
         },
       },
@@ -219,7 +216,7 @@ async function main() {
         date: daysAgo(int(0, 700)),
         method: "UDHAAR",
         status: "ACTIVE",
-        items: { create: [{ productId: p.id, unit: "PIECE", quantity, pieces: quantity, ratePaisa: rate, unitCostPaisa: p.latestCostPaisa }] },
+        items: { create: [{ productId: p.id, unit: "PIECE", qtyMilli: quantity * 1000, ratePaisa: rate, unitCostPaisa: p.latestCostPaisa }] },
         ...(rnd() < 0.5
           ? { payments: { create: [{ method: "CASH" as const, amountPaisa: Math.floor(total * rnd()) }] } }
           : {}),
@@ -238,7 +235,7 @@ async function main() {
         data: {
           productId: p.id,
           type: isIn ? "PURCHASE_IN" : "SALE_OUT",
-          piecesDelta: isIn ? int(10, 120) : -int(10, 90),
+          qtyMilli: (isIn ? int(10, 120) : -int(10, 90)) * 1000,
           reason: "fixture",
         },
       });

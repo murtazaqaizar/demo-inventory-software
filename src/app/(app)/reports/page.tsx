@@ -1,4 +1,6 @@
 import { prisma } from "@/lib/prisma";
+import { PRODUCT_UNIT } from "@/lib/products";
+import { formatQty, formatQtyTotals, formatQtyUnit, lineAmount, unitOf } from "@/lib/qty";
 import { requireOwnerPage } from "@/lib/guards";
 import { getIncomeStatement, resolvePeriod } from "@/lib/reports";
 import { getStockMap } from "@/lib/stock";
@@ -27,14 +29,19 @@ export default async function ReportsPage({
   const { statement, perProduct } = await getIncomeStatement(period.from, period.to);
 
   // Stock reports (feature 29) + stock valuation (improvement 9)
-  const products = await prisma.product.findMany({ where: { active: true }, orderBy: { code: "asc" } });
+  const products = await prisma.product.findMany({
+    where: { active: true },
+    include: PRODUCT_UNIT,
+    orderBy: { code: "asc" },
+  });
   const stock = await getStockMap(products.map((p) => p.id));
-  const lowStock = products.filter((p) => (stock.get(p.id) ?? 0) <= p.minStockLevel);
+  const lowStock = products.filter((p) => (stock.get(p.id) ?? 0) <= p.minStockMilli);
   const stockValuePaisa = products.reduce(
-    (s, p) => s + (stock.get(p.id) ?? 0) * p.latestCostPaisa,
+    (s, p) => s + lineAmount(stock.get(p.id) ?? 0, p.latestCostPaisa),
     0
   );
-  const totalPieces = products.reduce((s, p) => s + (stock.get(p.id) ?? 0), 0);
+  // Units never add across: "1,240 pcs + 16,000 m".
+  const totalQty = formatQtyTotals(products.map((p) => ({ qtyMilli: stock.get(p.id) ?? 0, unit: unitOf(p) })));
 
   const defaultMonth = period.mode === "month" ? `${period.from.getFullYear()}-${String(period.from.getMonth() + 1).padStart(2, "0")}` : "";
 
@@ -132,7 +139,7 @@ export default async function ReportsPage({
             <div>
               <p className="text-ink-muted">Stock value</p>
               <p className="text-[22px] font-semibold text-ink">{formatPKR(stockValuePaisa)}</p>
-              <p className="text-xs text-ink-muted">{totalPieces} pcs at latest cost</p>
+              <p className="text-xs text-ink-muted">{totalQty} at latest cost</p>
             </div>
           </div>
           {lowStock.length === 0 ? (
@@ -143,8 +150,8 @@ export default async function ReportsPage({
                 <li key={p.id} className="flex items-center justify-between py-2">
                   <span className="text-ink">{p.name}</span>
                   <span className="flex items-center gap-2">
-                    <span className="text-ink-muted">{stock.get(p.id) ?? 0} pcs</span>
-                    <Badge tone="red">min {p.minStockLevel}</Badge>
+                    <span className="text-ink-muted">{formatQtyUnit(stock.get(p.id) ?? 0, unitOf(p))}</span>
+                    <Badge tone="red">min {formatQty(p.minStockMilli)}</Badge>
                   </span>
                 </li>
               ))}
@@ -168,7 +175,7 @@ export default async function ReportsPage({
             <thead className="border-b border-line text-left text-ink-muted">
               <tr>
                 <th className="h-11 px-4 py-3 font-medium">Product</th>
-                <th className="px-4 py-3 text-right font-medium">Pieces sold</th>
+                <th className="px-4 py-3 text-right font-medium">Qty sold</th>
                 <th className="px-4 py-3 text-right font-medium">Revenue</th>
                 <th className="px-4 py-3 text-right font-medium">COGS</th>
                 <th className="px-4 py-3 text-right font-medium">Profit</th>
@@ -176,12 +183,12 @@ export default async function ReportsPage({
             </thead>
             <tbody className="divide-y divide-line">
               {perProduct.map((p) => (
-                <tr key={p.productId}>
+                <tr key={p.productId ?? "custom"}>
                   <td className="h-11 px-4 py-3" data-label="Product">
                     <span className="font-mono text-xs text-ink-muted">{p.code}</span>{" "}
                     <span className="font-medium text-ink">{p.name}</span>
                   </td>
-                  <td className="h-11 px-4 py-3 text-right font-mono" data-label="Pieces sold">{p.qtyPieces}</td>
+                  <td className="h-11 px-4 py-3 text-right font-mono" data-label="Qty sold">{p.qtyMilli === null ? "—" : formatQtyUnit(p.qtyMilli, p.unit)}</td>
                   <td className="h-11 px-4 py-3 text-right font-mono" data-label="Revenue">{formatPKR(p.revenuePaisa)}</td>
                   <td className="px-4 py-3 text-right text-ink-muted" data-label="COGS">{formatPKR(p.cogsPaisa)}</td>
                   <td
