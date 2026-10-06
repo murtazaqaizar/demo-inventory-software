@@ -14,20 +14,22 @@ import {
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
 import { formatPKR } from "@/lib/money";
-import { UNITS, lineAmount, qtyStep, toMilli, unitLabel, unitShort, type Unit } from "@/lib/qty";
+import { PIECE, PIECE_UNIT_ID, lineAmount, qtyStep, toMilli, type Unit, type UnitOption } from "@/lib/qty";
 
 type CustomerOpt = { id: string; name: string; isCash: boolean };
 // "custom" credits a free-text bill line (goods bought from outside): money only, no stock.
-type Line = { kind: "stock" | "custom"; productId: string; description: string; unit: Unit; qty: string; rateRs: string };
+type Line = { kind: "stock" | "custom"; productId: string; description: string; unitId: string; qty: string; rateRs: string };
 
-const emptyLine: Line = { kind: "stock", productId: "", description: "", unit: "PIECE", qty: "", rateRs: "" };
+const emptyLine: Line = { kind: "stock", productId: "", description: "", unitId: PIECE_UNIT_ID, qty: "", rateRs: "" };
 
 export function ReturnBuilder({
   products,
   customers,
+  units,
 }: {
   products: PickerProduct[];
   customers: CustomerOpt[];
+  units: UnitOption[]; // for custom lines
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
@@ -57,7 +59,7 @@ export function ReturnBuilder({
       .map((l) =>
         l.kind === "stock"
           ? { productId: l.productId, qty: Number(l.qty), rateRs: Number(l.rateRs) || 0 }
-          : { description: l.description.trim(), unit: l.unit, qty: Number(l.qty), rateRs: Number(l.rateRs) || 0 }
+          : { description: l.description.trim(), unitId: l.unitId, qty: Number(l.qty), rateRs: Number(l.rateRs) || 0 }
       );
     if (items.length === 0) {
       setError("Add at least one line with a product (or custom item name) and quantity.");
@@ -122,8 +124,10 @@ export function ReturnBuilder({
 
         <div className="space-y-3">
           {lines.map((l, i) => {
-            const unit: Unit =
-              l.kind === "custom" ? l.unit : (products.find((p) => p.id === l.productId)?.unit ?? "PIECE");
+            const unit: Unit | null =
+              l.kind === "custom"
+                ? (units.find((u) => u.id === l.unitId) ?? PIECE)
+                : (products.find((p) => p.id === l.productId)?.unit ?? null);
             return (
             <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_100px_110px_120px_auto] sm:items-center">
               {l.kind === "stock" ? (
@@ -138,22 +142,22 @@ export function ReturnBuilder({
                 />
               )}
               {l.kind === "custom" ? (
-                <Select value={l.unit} onChange={(e) => updateLine(i, { unit: e.target.value as Unit })} aria-label="Unit">
-                  {UNITS.map((u) => (
-                    <option key={u.value} value={u.value}>
-                      {u.label}
+                <Select value={l.unitId} onChange={(e) => updateLine(i, { unitId: e.target.value })} aria-label="Unit">
+                  {units.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name}
                     </option>
                   ))}
                 </Select>
               ) : (
-                <span className="text-[13px] text-ink-muted">{unitLabel(unit)}</span>
+                <span className="text-[13px] text-ink-muted">{unit?.name ?? ""}</span>
               )}
               <Input
                 type="number"
                 min={0}
                 step={qtyStep(unit)}
-                placeholder={`Qty (${unitShort(unit)})`}
-                aria-label={`Quantity in ${unitShort(unit)}`}
+                placeholder={unit ? `Qty (${unit.short})` : "Qty"}
+                aria-label={unit ? `Quantity in ${unit.short}` : "Quantity"}
                 value={l.qty}
                 onChange={(e) => updateLine(i, { qty: e.target.value })}
               />
@@ -161,8 +165,8 @@ export function ReturnBuilder({
                 type="number"
                 min={0}
                 step="0.01"
-                placeholder={`Rate/${unitShort(unit)} Rs`}
-                aria-label={`Rate per ${unitLabel(unit).toLowerCase()} in rupees`}
+                placeholder={unit ? `Rate/${unit.short} Rs` : "Rate Rs"}
+                aria-label={unit ? `Rate per ${unit.name.toLowerCase()} in rupees` : "Rate in rupees"}
                 value={l.rateRs}
                 onChange={(e) => updateLine(i, { rateRs: e.target.value })}
               />

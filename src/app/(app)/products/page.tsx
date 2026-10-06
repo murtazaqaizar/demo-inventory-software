@@ -20,6 +20,7 @@ import {
   thNumClass,
 } from "@/components/ui";
 import { SearchBar, Pagination } from "@/components/list-controls";
+import { Swatch } from "@/components/color-select";
 import { DeleteButton } from "@/components/delete-button";
 import { StockAdjuster } from "./stock-adjuster";
 import { deleteProduct } from "./actions";
@@ -45,7 +46,7 @@ export default async function ProductsPage({
       { code: { contains: sp.q, mode: "insensitive" } },
       { size: { contains: sp.q, mode: "insensitive" } },
       { variant: { contains: sp.q, mode: "insensitive" } },
-      { color: { contains: sp.q, mode: "insensitive" } },
+      { color: { name: { contains: sp.q, mode: "insensitive" } } },
       { category: { name: { contains: sp.q, mode: "insensitive" } } },
     ];
   }
@@ -57,7 +58,7 @@ export default async function ProductsPage({
     listCategories(),
     prisma.product.findMany({
       where,
-      include: { category: { select: { name: true, unit: true } } },
+      include: { category: { select: { name: true, unit: true } }, color: { select: { name: true, hex: true } } },
       orderBy: { code: "asc" },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
@@ -155,8 +156,14 @@ export default async function ProductsPage({
                         <div className="text-right sm:text-left">
                           <div className="font-medium text-ink">{p.name}</div>
                           <div className="text-[13px] text-ink-muted">
-                            {[p.size, p.variant, p.color].filter(Boolean).join(" · ")}
+                            {[p.size, p.variant].filter(Boolean).join(" · ")}
                           </div>
+                          {p.color && (
+                            <div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink-muted sm:justify-start">
+                              <Swatch hex={p.color.hex} size={12} />
+                              {p.color.name}
+                            </div>
+                          )}
                         </div>
                       </td>
                       <td

@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { num } from "@/lib/sql";
-import type { Unit } from "@/lib/qty";
 
 export type SalesTotals = { today: number; month: number; lastMonth: number };
 
@@ -43,13 +42,13 @@ export type IncomeStatement = {
 };
 
 // One row per product, plus a single "Custom items" row (productId null) for
-// free-text bill lines. qtyMilli is in `unit`; on the custom row units may mix,
+// free-text bill lines. qtyMilli is in `unit` (short label); on the custom row units may mix,
 // so it is null there.
 export type ProductProfit = {
   productId: string | null;
   code: string;
   name: string;
-  unit: Unit;
+  unit: string; // short label, e.g. "m"
   qtyMilli: number | null;
   revenuePaisa: number;
   cogsPaisa: number;
@@ -69,7 +68,7 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
     productId: string | null;
     code: string | null;
     name: string | null;
-    unit: Unit;
+    unit: string;
     qty: number | string;
     revenue: number | string;
     cogs: number | string;
@@ -79,7 +78,7 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
     // Voided bills never count as sales (improvement 2). Sample lines carry no
     // revenue and are handled separately below.
     prisma.$queryRaw<AggRow[]>`
-      SELECT it."productId", p."code", p."name", COALESCE(c."unit", 'PIECE')::text AS "unit",
+      SELECT it."productId", p."code", p."name", COALESCE(un."short", 'pcs') AS "unit",
              SUM(it."qtyMilli")                          AS "qty",
              SUM(ROUND(it."qtyMilli"::numeric * it."ratePaisa" / 1000))       AS "revenue",
              SUM(ROUND(it."qtyMilli"::numeric * it."unitCostPaisa" / 1000))     AS "cogs"
@@ -87,14 +86,15 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
       JOIN "Invoice" i ON i."id" = it."invoiceId"
       LEFT JOIN "Product" p ON p."id" = it."productId"
       LEFT JOIN "Category" c ON c."id" = p."categoryId"
+      LEFT JOIN "Unit" un ON un."id" = c."unitId"
       WHERE i."status" = 'ACTIVE'
         AND i."date" >= ${from} AND i."date" <= ${to}
         AND it."isSample" = false
-      GROUP BY it."productId", p."code", p."name", c."unit"
+      GROUP BY it."productId", p."code", p."name", un."short"
     `,
     // Returns reduce sales and COGS in the period they happen (improvement 3).
     prisma.$queryRaw<AggRow[]>`
-      SELECT ci."productId", p."code", p."name", COALESCE(c."unit", 'PIECE')::text AS "unit",
+      SELECT ci."productId", p."code", p."name", COALESCE(un."short", 'pcs') AS "unit",
              SUM(ci."qtyMilli")                          AS "qty",
              SUM(ROUND(ci."qtyMilli"::numeric * ci."ratePaisa" / 1000))       AS "revenue",
              SUM(ROUND(ci."qtyMilli"::numeric * ci."unitCostPaisa" / 1000))     AS "cogs"
@@ -102,8 +102,9 @@ export async function getIncomeStatement(from: Date, to: Date): Promise<{
       JOIN "CreditNote" n ON n."id" = ci."creditNoteId"
       LEFT JOIN "Product" p ON p."id" = ci."productId"
       LEFT JOIN "Category" c ON c."id" = p."categoryId"
+      LEFT JOIN "Unit" un ON un."id" = c."unitId"
       WHERE n."date" >= ${from} AND n."date" <= ${to}
-      GROUP BY ci."productId", p."code", p."name", c."unit"
+      GROUP BY ci."productId", p."code", p."name", un."short"
     `,
     // Free samples: no revenue, their cost is booked as marketing (DECISIONS §5).
     prisma.$queryRaw<{ cost: number | string }[]>`

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
-import { listCategories } from "@/lib/products";
+import { listCategories, listColors } from "@/lib/products";
 import { fromMilli } from "@/lib/qty";
 import { PageHeader } from "@/components/ui";
 import { ProductForm } from "../../new/product-form";
@@ -14,9 +14,10 @@ export default async function EditProductPage({
   const user = await requireUser();
   const { id } = await params;
 
-  const [product, categories] = await Promise.all([
+  const [product, categories, colors] = await Promise.all([
     prisma.product.findUnique({ where: { id } }),
     listCategories(),
+    listColors(),
   ]);
   if (!product) notFound();
 
@@ -26,12 +27,13 @@ export default async function EditProductPage({
       <ProductForm
         canSeeCost={user.role === "OWNER"}
         categories={categories}
+        colors={colors}
         initial={{
           id: product.id,
           name: product.name,
           size: product.size,
           variant: product.variant,
-          color: product.color,
+          colorId: product.colorId,
           categoryId: product.categoryId,
           minStock: fromMilli(product.minStockMilli),
           latestCostRs: product.latestCostPaisa / 100,

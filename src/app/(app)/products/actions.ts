@@ -4,11 +4,11 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { safeAction } from "@/lib/action-errors";
-import { nextProductCode } from "@/lib/products";
+import { PRODUCT_UNIT, UNIT_FIELDS, nextProductCode } from "@/lib/products";
 import { requireUserApi, requireOwnerApi } from "@/lib/guards";
 import { rupeesToPaisa } from "@/lib/money";
 import { audit } from "@/lib/audit";
-import { formatQtyUnit, qtyError, toMilli, unitLabel, type Unit } from "@/lib/qty";
+import { PIECE, formatQtyUnit, qtyError, toMilli, unitOf, type Unit } from "@/lib/qty";
 
 // Quantities arrive as typed text ("16000", "2.5") in the category's unit and are
 // stored as thousandths (src/lib/qty.ts). Blank = 0.
@@ -18,7 +18,7 @@ const productFields = {
   name: z.string().trim().min(1, "Name is required"),
   size: z.string().optional(),
   variant: z.string().optional(),
-  color: z.string().optional(),
+  colorId: z.string().optional(),
   categoryId: z.string().optional(),
   minStock: qtyText,
 };
@@ -31,11 +31,19 @@ const productSchema = z.object({
 
 export type ActionResult = { ok: boolean; error?: string; message?: string };
 
+// A color must be one of the shop's list; anything else (stale form) becomes none.
+async function colorIdOrNull(raw: string | undefined): Promise<string | null> {
+  const id = clean(raw);
+  if (!id) return null;
+  const hit = await prisma.color.findUnique({ where: { id }, select: { id: true } });
+  return hit?.id ?? null;
+}
+
 // The unit a product is counted in comes from its category; none = by the piece.
 async function unitForCategory(categoryId: string | null): Promise<Unit> {
-  if (!categoryId) return "PIECE";
-  const c = await prisma.category.findUnique({ where: { id: categoryId }, select: { unit: true } });
-  return (c?.unit as Unit | undefined) ?? "PIECE";
+  if (!categoryId) return PIECE;
+  const c = await prisma.category.findUnique({ where: { id: categoryId }, select: { unit: { select: UNIT_FIELDS } } });
+  return c?.unit ?? PIECE;
 }
 
 function clean(s: string | undefined) {
@@ -68,7 +76,7 @@ export async function createProduct(formData: FormData): Promise<ActionResult> {
         name: d.name,
         size: clean(d.size),
         variant: clean(d.variant),
-        color: clean(d.color),
+        colorId: await colorIdOrNull(d.colorId),
         categoryId,
         minStockMilli: d.minStock,
         latestCostPaisa: rupeesToPaisa(d.initialCostRs),
@@ -112,10 +120,10 @@ export async function recordMovement(formData: FormData): Promise<ActionResult> 
 
     const product = await prisma.product.findUnique({
       where: { id: productId },
-      include: { category: { select: { unit: true } } },
+      include: PRODUCT_UNIT,
     });
     if (!product) return { ok: false, error: "Product not found" };
-    const unit = (product.category?.unit as Unit | undefined) ?? "PIECE";
+    const unit = unitOf(product);
 
     const milli = toMilli(qty);
     const e = qtyError(Math.abs(milli), unit);
@@ -168,22 +176,22 @@ export async function updateProduct(formData: FormData): Promise<ActionResult> {
 
     const existing = await prisma.product.findUnique({
       where: { id: d.productId },
-      include: { category: { select: { unit: true } } },
+      include: PRODUCT_UNIT,
     });
     if (!existing) return { ok: false, error: "Product not found" };
 
     const categoryId = clean(d.categoryId);
-    const oldUnit = (existing.category?.unit as Unit | undefined) ?? "PIECE";
+    const oldUnit = unitOf(existing);
     const newUnit = await unitForCategory(categoryId);
 
     // Moving to a category with a different unit would reinterpret the stock already
     // counted (200 pieces would become 200 m). Only allowed before any stock moves.
-    if (newUnit !== oldUnit) {
+    if (newUnit.short !== oldUnit.short) {
       const history = await prisma.stockMovement.count({ where: { productId: d.productId } });
       if (history > 0) {
         return {
           ok: false,
-          error: `This product's stock is counted in ${unitLabel(oldUnit).toLowerCase()}s, so it can only move to a category with the same unit. Add a new product for the ${unitLabel(newUnit).toLowerCase()} version instead.`,
+          error: `This product's stock is counted in ${oldUnit.name} (${oldUnit.short}), so it can only move to a category with the same unit. Add a new product for the ${newUnit.name} version instead.`,
         };
       }
     }
@@ -196,7 +204,7 @@ export async function updateProduct(formData: FormData): Promise<ActionResult> {
         name: d.name,
         size: clean(d.size),
         variant: clean(d.variant),
-        color: clean(d.color),
+        colorId: await colorIdOrNull(d.colorId),
         categoryId,
         minStockMilli: d.minStock,
         // Only the owner may change cost; staff edits leave it untouched.

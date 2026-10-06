@@ -3,7 +3,7 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireOwnerPage } from "@/lib/guards";
 import { getStockMap } from "@/lib/stock";
-import { PRODUCT_UNIT } from "@/lib/products";
+import { PRODUCT_INCLUDE } from "@/lib/products";
 import { fromMilli, unitOf } from "@/lib/qty";
 import { Button, Panel, PageHeader } from "@/components/ui";
 import { PurchaseBuilder } from "../../new/purchase-builder";
@@ -28,7 +28,7 @@ export default async function EditPurchasePage({
     // hidden, otherwise their line would render with nothing selected.
     prisma.product.findMany({
       where: { OR: [{ active: true }, { id: { in: purchase.items.map((it) => it.productId) } }] },
-      include: PRODUCT_UNIT,
+      include: PRODUCT_INCLUDE,
       orderBy: { code: "asc" },
     }),
     // The purchase's own supplier stays selectable even if it was later hidden.
@@ -59,7 +59,8 @@ export default async function EditPurchasePage({
           name: p.name,
           size: p.size,
           variant: p.variant,
-          color: p.color,
+          color: p.color?.name,
+          colorHex: p.color?.hex,
           stock: stock.get(p.id) ?? 0,
           unit: unitOf(p),
           latestCostPaisa: p.latestCostPaisa,

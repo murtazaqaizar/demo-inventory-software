@@ -5,7 +5,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createProduct, updateProduct, type ActionResult } from "../actions";
 import { Button, FieldError, Input, Label, Panel, Select, numInputClass } from "@/components/ui";
-import { qtyStep, unitLabel, unitShort, type Unit } from "@/lib/qty";
+import { PIECE, qtyStep, unitShort, type Unit } from "@/lib/qty";
+import { ColorSelect, type ColorOption } from "@/components/color-select";
 
 export type CategoryOption = { id: string; name: string; unit: Unit };
 
@@ -14,7 +15,7 @@ export type ProductInitial = {
   name: string;
   size: string | null;
   variant: string | null;
-  color: string | null;
+  colorId: string | null;
   categoryId: string | null;
   minStock: number; // in the product's unit (not thousandths)
   latestCostRs: number;
@@ -23,10 +24,12 @@ export type ProductInitial = {
 export function ProductForm({
   canSeeCost,
   categories,
+  colors,
   initial,
 }: {
   canSeeCost: boolean;
   categories: CategoryOption[];
+  colors: ColorOption[];
   initial?: ProductInitial;
 }) {
   const router = useRouter();
@@ -36,7 +39,8 @@ export function ProductForm({
     { ok: false }
   );
   const [categoryId, setCategoryId] = useState(initial?.categoryId ?? "");
-  const unit: Unit = categories.find((c) => c.id === categoryId)?.unit ?? "PIECE";
+  const unit: Unit = categories.find((c) => c.id === categoryId)?.unit ?? PIECE;
+  const per = unit.name.toLowerCase();
   const short = unitShort(unit);
 
   useEffect(() => {
@@ -64,12 +68,15 @@ export function ProductForm({
               <option value="">No category (by the piece)</option>
               {categories.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name} — {unitLabel(c.unit).toLowerCase()}
+                  {c.name} — {c.unit.name.toLowerCase()} ({c.unit.short})
                 </option>
               ))}
             </Select>
             <p className="mt-1.5 text-[13px] text-ink-muted">
-              Counted in <span className="font-medium text-ink">{unitLabel(unit).toLowerCase()}s</span>
+              Counted in{" "}
+              <span className="font-medium text-ink">
+                {unit.name} ({unit.short})
+              </span>
               {" · "}
               <Link href="/categories" className="underline-offset-2 hover:underline">
                 Manage categories
@@ -78,7 +85,7 @@ export function ProductForm({
           </div>
           <div>
             <Label htmlFor="color">Color (optional)</Label>
-            <Input id="color" name="color" placeholder="Red" defaultValue={initial?.color ?? ""} />
+            <ColorSelect id="color" colors={colors} defaultValue={initial?.colorId ?? ""} />
           </div>
         </div>
 
@@ -121,7 +128,7 @@ export function ProductForm({
                 defaultValue={0}
                 className={numInputClass}
               />
-              {unit !== "PIECE" && (
+              {unit.decimals && (
                 <p className="mt-1.5 text-[13px] text-ink-muted">
                   Total length, e.g. 200 rolls × 80 m = 16000.
                 </p>
@@ -129,7 +136,7 @@ export function ProductForm({
             </div>
             {canSeeCost && (
               <div>
-                <Label htmlFor="initialCostRs">Cost per {unitLabel(unit).toLowerCase()} (Rs)</Label>
+                <Label htmlFor="initialCostRs">Cost per {per} (Rs)</Label>
                 <Input id="initialCostRs" name="initialCostRs" type="number" min={0} step="0.01" defaultValue={0} className={numInputClass} />
               </div>
             )}
@@ -138,7 +145,7 @@ export function ProductForm({
           canSeeCost && (
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
               <div>
-                <Label htmlFor="latestCostRs">Cost per {unitLabel(unit).toLowerCase()} (Rs)</Label>
+                <Label htmlFor="latestCostRs">Cost per {per} (Rs)</Label>
                 <Input id="latestCostRs" name="latestCostRs" type="number" min={0} step="0.01" defaultValue={initial!.latestCostRs} className={numInputClass} />
               </div>
             </div>

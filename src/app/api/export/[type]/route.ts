@@ -42,7 +42,7 @@ export async function GET(
     case "stock-valuation": {
       const products = await prisma.product.findMany({
         where: { active: true },
-        include: { category: { select: { name: true, unit: true } } },
+        include: { category: { select: { name: true, unit: true } }, color: { select: { name: true } } },
         orderBy: { code: "asc" },
       });
       const stock = await getStockMap(products.map((p) => p.id));
@@ -56,7 +56,7 @@ export async function GET(
           p.code,
           p.name,
           p.category?.name ?? "",
-          p.color ?? "",
+          p.color?.name ?? "",
           p.size ?? "",
           p.variant ?? "",
           fromMilli(qty),

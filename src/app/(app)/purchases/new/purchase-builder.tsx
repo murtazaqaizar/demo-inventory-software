@@ -14,7 +14,7 @@ import {
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
 import { formatPKR } from "@/lib/money";
-import { lineAmount, qtyStep, toMilli, unitLabel, unitShort } from "@/lib/qty";
+import { lineAmount, qtyStep, toMilli } from "@/lib/qty";
 
 // Same shape the billing screen feeds its picker, plus the cost side — on a
 // purchase you want to see what this product last cost you while typing.
@@ -306,7 +306,8 @@ export function PurchaseBuilder({
 
         <div className="space-y-3">
           {lines.map((l, i) => {
-            const unit = products.find((x) => x.id === l.productId)?.unit ?? "PIECE";
+            // No unit until a product is picked — neutral labels instead of "pcs".
+            const unit = products.find((x) => x.id === l.productId)?.unit ?? null;
             return (
             <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_120px_140px_auto] sm:items-center">
               <ProductPicker
@@ -328,8 +329,8 @@ export function PurchaseBuilder({
                 type="number"
                 min={0}
                 step={qtyStep(unit)}
-                placeholder={`Qty (${unitShort(unit)})`}
-                aria-label={`Quantity in ${unitShort(unit)}`}
+                placeholder={unit ? `Qty (${unit.short})` : "Qty"}
+                aria-label={unit ? `Quantity in ${unit.short}` : "Quantity"}
                 value={l.qty}
                 onChange={(e) => updateLine(i, { qty: e.target.value })}
               />
@@ -337,8 +338,8 @@ export function PurchaseBuilder({
                 type="number"
                 min={0}
                 step="0.01"
-                placeholder={`Cost/${unitShort(unit)} Rs`}
-                aria-label={`Cost per ${unitLabel(unit).toLowerCase()} in rupees`}
+                placeholder={unit ? `Cost/${unit.short} Rs` : "Cost Rs"}
+                aria-label={unit ? `Cost per ${unit.name.toLowerCase()} in rupees` : "Cost in rupees"}
                 value={l.unitCostRs}
                 onChange={(e) => updateLine(i, { unitCostRs: e.target.value })}
               />

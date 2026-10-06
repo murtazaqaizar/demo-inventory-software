@@ -10,7 +10,6 @@
 
 import type { Prisma } from "@/generated/prisma/client";
 import type { PaymentMethod } from "@/generated/prisma/enums";
-import type { Unit } from "@/lib/qty";
 
 type Tx = Prisma.TransactionClient;
 
@@ -20,7 +19,7 @@ type Tx = Prisma.TransactionClient;
 export type SaleLine = {
   productId: string | null;
   description: string | null;
-  unit: Unit;
+  unit: string; // the unit's short label ("m"), snapshotted for printing
   qtyMilli: number; // thousandths of the unit
   ratePaisa: number; // per one unit
   unitCostPaisa: number; // per one unit

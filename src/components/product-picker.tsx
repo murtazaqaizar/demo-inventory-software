@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { inputClass } from "@/components/ui";
 import { formatQtyUnit, type Unit } from "@/lib/qty";
+import { Swatch } from "@/components/color-select";
 
 export type PickerProduct = {
   id: string;
@@ -11,6 +12,7 @@ export type PickerProduct = {
   size?: string | null;
   variant?: string | null;
   color?: string | null; // tells apart e.g. red and black wire of the same size
+  colorHex?: string | null;
   stock?: number; // thousandths of `unit`
   unit?: Unit;
 };
@@ -131,7 +133,10 @@ export function ProductPicker({
               }`}
             >
               <span className="min-w-0">
-                <span className="block truncate font-medium">{p.name}</span>
+                <span className="flex items-center gap-1.5 truncate font-medium">
+                  {p.colorHex && <Swatch hex={p.colorHex} size={10} />}
+                  {p.name}
+                </span>
                 <span
                   className={`block truncate font-mono text-[13px] ${
                     i === highlight ? "text-accent" : "text-ink-muted"

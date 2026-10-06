@@ -222,7 +222,7 @@ try {
 
       // --- 4b. decimal meters ----------------------------------------------
       console.log("\n4b. Decimal quantity in meters");
-      const wire = await tx.category.create({ data: { name: `${TAG} wire`, unit: "METER" } });
+      const wire = await tx.category.create({ data: { name: `${TAG} wire`, unitId: "unit_meter" } });
       const c = await tx.product.create({
         data: { code: `${TAG}-C`, name: `${TAG} product C`, categoryId: wire.id },
       });

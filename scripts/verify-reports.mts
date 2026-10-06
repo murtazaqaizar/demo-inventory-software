@@ -88,11 +88,11 @@ async function oldIncomeStatement(from: Date, to: Date) {
   const [items, returnItems, expenseAgg] = await Promise.all([
     prisma.invoiceItem.findMany({
       where: { invoice: { date: { gte: from, lte: to }, status: "ACTIVE" } },
-      include: { product: { select: { code: true, name: true, category: { select: { unit: true } } } } },
+      include: { product: { select: { code: true, name: true, category: { select: { unit: { select: { short: true } } } } } } },
     }),
     prisma.creditNoteItem.findMany({
       where: { creditNote: { date: { gte: from, lte: to } } },
-      include: { product: { select: { code: true, name: true, category: { select: { unit: true } } } } },
+      include: { product: { select: { code: true, name: true, category: { select: { unit: { select: { short: true } } } } } } },
     }),
     prisma.expense.aggregate({ _sum: { amountPaisa: true }, where: { date: { gte: from, lte: to } } }),
   ]);
@@ -112,12 +112,12 @@ async function oldIncomeStatement(from: Date, to: Date) {
   };
   const map = new Map<string, ProductRow>();
   // Custom (free-text) lines have no product: they share one row with no quantity.
-  const rowFor = (it: { productId: string | null; product: { code: string; name: string; category: { unit: string } | null } | null }) =>
+  const rowFor = (it: { productId: string | null; product: { code: string; name: string; category: { unit: { short: string } } | null } | null }) =>
     map.get(it.productId ?? "custom") ?? {
       productId: it.productId,
       code: it.product?.code ?? "—",
       name: it.product?.name ?? "Custom items (not from stock)",
-      unit: it.product?.category?.unit ?? "PIECE",
+      unit: it.product?.category?.unit.short ?? "pcs",
       qtyMilli: it.productId ? 0 : null,
       revenuePaisa: 0,
       cogsPaisa: 0,

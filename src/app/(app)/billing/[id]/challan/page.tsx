@@ -20,7 +20,7 @@ export default async function ChallanPage({
 
   const invoice = await prisma.invoice.findUnique({
     where: { id },
-    include: { customer: true, items: { include: { product: true } } },
+    include: { customer: true, items: { include: { product: { include: { color: { select: { name: true } } } } } } },
   });
   if (!invoice) notFound();
 
@@ -84,7 +84,7 @@ export default async function ChallanPage({
                   <span className="font-medium">{it.product?.name ?? it.description}</span>{" "}
                   {it.product && (
                     <span className="text-ink-muted">
-                      {[it.product.size, it.product.variant, it.product.color].filter(Boolean).join(" · ")}
+                      {[it.product.size, it.product.variant, it.product.color?.name].filter(Boolean).join(" · ")}
                     </span>
                   )}
                 </td>

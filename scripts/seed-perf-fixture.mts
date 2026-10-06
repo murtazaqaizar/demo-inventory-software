@@ -104,7 +104,7 @@ async function main() {
         const rate = int(8_000, 60_000);
         return {
           productId: p.id,
-          unit: "PIECE" as const,
+          unit: "pcs",
           qtyMilli: quantity * 1000,
           ratePaisa: rate,
           unitCostPaisa: p.latestCostPaisa,
@@ -167,7 +167,7 @@ async function main() {
             create: [
               {
                 productId: p.id,
-                unit: "PIECE",
+                unit: "pcs",
                 qtyMilli: quantity * 1000,
                 ratePaisa: int(8_000, 60_000),
                 unitCostPaisa: p.latestCostPaisa,
@@ -193,7 +193,7 @@ async function main() {
         status: "ACTIVE",
         items: {
           create: [
-            { productId: p.id, unit: "PIECE", qtyMilli: 3_000, ratePaisa: 25_000, unitCostPaisa: p.latestCostPaisa },
+            { productId: p.id, unit: "pcs", qtyMilli: 3_000, ratePaisa: 25_000, unitCostPaisa: p.latestCostPaisa },
           ],
         },
       },
@@ -216,7 +216,7 @@ async function main() {
         date: daysAgo(int(0, 700)),
         method: "UDHAAR",
         status: "ACTIVE",
-        items: { create: [{ productId: p.id, unit: "PIECE", qtyMilli: quantity * 1000, ratePaisa: rate, unitCostPaisa: p.latestCostPaisa }] },
+        items: { create: [{ productId: p.id, unit: "pcs", qtyMilli: quantity * 1000, ratePaisa: rate, unitCostPaisa: p.latestCostPaisa }] },
         ...(rnd() < 0.5
           ? { payments: { create: [{ method: "CASH" as const, amountPaisa: Math.floor(total * rnd()) }] } }
           : {}),

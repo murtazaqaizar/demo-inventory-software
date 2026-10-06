@@ -60,7 +60,10 @@ model Product {
   name            String
   size            String? // e.g. 4-inch (feature 1)
   variant         String? // brand/thickness etc. (feature 1)
-  color           String? // optional label; a different color with its own stock is a separate product
+  // Optional, picked from the shop's color list. A different color with its own
+  // stock is a separate product.
+  colorId         String?
+  color           Color?   @relation(fields: [colorId], references: [id])
   // The category decides the unit stock is counted and sold in. No category = sold by the piece.
   categoryId      String?
   category        Category? @relation(fields: [categoryId], references: [id])
@@ -81,13 +84,34 @@ model Product {
 
   @@index([name])
   @@index([categoryId])
+  @@index([colorId])
 }
 
-// Unit a category's products are counted and sold in (client B feedback, 2026-10-06).
-enum QtyUnit {
-  PIECE
-  METER
-  FEET
+// Units the shop counts and sells in — piece, meter, feet, kg, dozen… The owner
+// adds their own on /categories (client B feedback, 2026-10-06). Quantities are
+// always stored as thousandths of the unit; `decimals` only decides whether a
+// fractional amount (2.5) may be entered.
+model Unit {
+  id        String   @id @default(cuid())
+  name      String   @unique // "Meter"
+  short     String   @unique // "m" — printed after every quantity
+  decimals  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categories Category[]
+}
+
+// The shop's color list, each with a swatch (client B, 2026-10-06). Managed on
+// /categories; the product form picks from it.
+model Color {
+  id        String   @id @default(cuid())
+  name      String   @unique // "Red"
+  hex       String // swatch, "#dc2626"
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
 }
 
 model Category {
@@ -95,11 +119,14 @@ model Category {
   name      String   @unique
   // Locked once any product in the category has stock history — changing it would
   // silently reinterpret every stored quantity (200 pieces would read as 200 m).
-  unit      QtyUnit  @default(PIECE)
+  unitId    String
+  unit      Unit     @relation(fields: [unitId], references: [id])
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   products Product[]
+
+  @@index([unitId])
 }
 
 enum MovementType {
@@ -320,7 +347,7 @@ model InvoiceItem {
   productId     String?
   product       Product? @relation(fields: [productId], references: [id])
   description   String? // custom line's item name (null for stock lines — use product.name)
-  unit          QtyUnit  @default(PIECE) // snapshot of the unit at sale time, for printing
+  unit          String   @default("pcs") // unit's short label at sale time, for printing
   qtyMilli      Int // thousandths of the unit
   ratePaisa     Int // negotiated rate per one unit (feature 13)
   // cost per one unit captured at sale time for latest-cost profit (feature 9, 28).
@@ -371,7 +398,7 @@ model CreditNoteItem {
   productId     String?
   product       Product?   @relation(fields: [productId], references: [id])
   description   String?
-  unit          QtyUnit    @default(PIECE)
+  unit          String     @default("pcs") // unit's short label at return time
   qtyMilli      Int // thousandths of the unit
   ratePaisa     Int // credited per unit
   unitCostPaisa Int        @default(0) // cost restored to stock

@@ -7,8 +7,8 @@ import { safeAction } from "@/lib/action-errors";
 import { TX_OPTIONS } from "@/lib/tx";
 import { requireUserApi } from "@/lib/guards";
 import { rupeesToPaisa, formatPKR } from "@/lib/money";
-import { PRODUCT_UNIT } from "@/lib/products";
-import { lineAmount, qtyError, toMilli, unitOf, type Unit } from "@/lib/qty";
+import { PRODUCT_UNIT, unitsById } from "@/lib/products";
+import { PIECE, lineAmount, qtyError, toMilli, unitOf } from "@/lib/qty";
 import { audit } from "@/lib/audit";
 
 export type ReturnResult =
@@ -20,7 +20,7 @@ export type ReturnResult =
 const itemSchema = z.object({
   productId: z.string().optional(),
   description: z.string().trim().max(120).optional(),
-  unit: z.enum(["PIECE", "METER", "FEET"]).default("PIECE"), // custom lines only
+  unitId: z.string().optional(), // custom lines only (a Unit id); stock lines use the product's
   qty: z.coerce.number().positive("Quantity must be more than zero"),
   rateRs: z.coerce.number().min(0).default(0),
   costRs: z.coerce.number().min(0).optional(), // custom lines only
@@ -45,7 +45,10 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
     const d = parsed.data;
 
     const ids = d.items.map((i) => i.productId).filter((id): id is string => Boolean(id));
-    const products = await prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_UNIT });
+    const [products, customUnits] = await Promise.all([
+      prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_UNIT }),
+      unitsById(d.items.map((i) => i.unitId).filter((id): id is string => Boolean(id))),
+    ]);
     const byId = new Map(products.map((p) => [p.id, p]));
 
     const customer = await prisma.customer.findUnique({ where: { id: d.customerId } });
@@ -54,7 +57,7 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
     type Line = {
       productId: string | null;
       description: string | null;
-      unit: Unit;
+      unit: string; // short label snapshot
       qtyMilli: number;
       ratePaisa: number;
       unitCostPaisa: number;
@@ -71,19 +74,20 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
         lines.push({
           productId: product.id,
           description: null,
-          unit,
+          unit: unit.short,
           qtyMilli,
           ratePaisa: rupeesToPaisa(it.rateRs),
           unitCostPaisa: product.latestCostPaisa,
         });
       } else {
         if (!it.description) return { ok: false, error: "A custom item needs a name." };
-        const e = qtyError(qtyMilli, it.unit);
+        const unit = (it.unitId && customUnits.get(it.unitId)) || PIECE;
+        const e = qtyError(qtyMilli, unit);
         if (e) return { ok: false, error: `${it.description}: ${e}` };
         lines.push({
           productId: null,
           description: it.description,
-          unit: it.unit,
+          unit: unit.short,
           qtyMilli,
           ratePaisa: rupeesToPaisa(it.rateRs),
           unitCostPaisa: it.costRs ? rupeesToPaisa(it.costRs) : 0,

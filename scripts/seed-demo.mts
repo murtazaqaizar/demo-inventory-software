@@ -73,6 +73,8 @@ async function wipe() {
   await prisma.moneyAccount.deleteMany();
   await prisma.product.deleteMany();
   await prisma.category.deleteMany();
+  // Units the demo added; the three built-in ones (fixed ids from migration 12) stay.
+  await prisma.unit.deleteMany({ where: { id: { notIn: ["unit_piece", "unit_meter", "unit_feet"] } } });
 
   // Bill and purchase numbers are what the shop actually reads. After a reset the
   // demo should open at #1, not carry on from the last run's sequence.
@@ -139,16 +141,29 @@ async function main() {
   // --- Products ------------------------------------------------------------
 // Categories carry the unit their products are counted and sold in: tools by
   // the piece, wire by the meter, pipe by the foot.
+  // Units are the shop's own list. The three built-ins come from migration 12; the
+  // demo adds two more so the Units section has examples of each kind.
+  const builtIn = [
+    { id: "unit_piece", name: "Piece", short: "pcs", decimals: false },
+    { id: "unit_meter", name: "Meter", short: "m", decimals: true },
+    { id: "unit_feet", name: "Feet", short: "ft", decimals: true },
+  ];
+  for (const u of builtIn) {
+    await prisma.unit.upsert({ where: { id: u.id }, update: u, create: u });
+  }
+  await prisma.unit.create({ data: { name: "Kilogram", short: "kg", decimals: true } });
+  await prisma.unit.create({ data: { name: "Dozen", short: "dz", decimals: false } });
+
   const categorySpecs = [
-    { key: "abr", name: "Abrasives", unit: "PIECE" },
-    { key: "tools", name: "Hand Tools", unit: "PIECE" },
-    { key: "safety", name: "Safety & Welding", unit: "PIECE" },
-    { key: "wire", name: "Electric Wire", unit: "METER" },
-    { key: "pipe", name: "PVC Pipe", unit: "FEET" },
+    { key: "abr", name: "Abrasives", unitId: "unit_piece" },
+    { key: "tools", name: "Hand Tools", unitId: "unit_piece" },
+    { key: "safety", name: "Safety & Welding", unitId: "unit_piece" },
+    { key: "wire", name: "Electric Wire", unitId: "unit_meter" },
+    { key: "pipe", name: "PVC Pipe", unitId: "unit_feet" },
   ] as const;
   const categoryIds = new Map<string, string>();
   for (const c of categorySpecs) {
-    const row = await prisma.category.create({ data: { name: c.name, unit: c.unit } });
+    const row = await prisma.category.create({ data: { name: c.name, unitId: c.unitId } });
     categoryIds.set(c.key, row.id);
   }
 
@@ -165,9 +180,9 @@ async function main() {
     { code: "PRD-0007", name: "Safety Gloves", size: "Large", variant: "Cotton, pair", cat: "safety", min: 40, cost: 150 },
     { code: "PRD-0008", name: "Welding Rod", size: "2.5mm", variant: "5 kg pack", cat: "safety", min: 8, cost: 1_450 },
     // Sold by length. Opening stock for wire is whole rolls: 200 rolls × 80 m.
-    { code: "PRD-0009", name: "PVC Wire", size: "1.5mm", variant: "Single core", color: "Red", cat: "wire", min: 1_000, cost: 38 },
-    { code: "PRD-0010", name: "PVC Wire", size: "1.5mm", variant: "Single core", color: "Black", cat: "wire", min: 1_000, cost: 38 },
-    { code: "PRD-0011", name: "PVC Pipe", size: "1 inch", variant: "Class C", color: "Grey", cat: "pipe", min: 200, cost: 55 },
+    { code: "PRD-0009", name: "PVC Wire", size: "1.5mm", variant: "Single core", color: "color_red", cat: "wire", min: 1_000, cost: 38 },
+    { code: "PRD-0010", name: "PVC Wire", size: "1.5mm", variant: "Single core", color: "color_black", cat: "wire", min: 1_000, cost: 38 },
+    { code: "PRD-0011", name: "PVC Pipe", size: "1 inch", variant: "Class C", color: "color_grey", cat: "pipe", min: 200, cost: 55 },
   ];
   const products = [];
   for (const p of productSpecs) {
@@ -177,7 +192,8 @@ async function main() {
         name: p.name,
         size: p.size,
         variant: p.variant,
-        color: "color" in p ? p.color : null,
+        // Palette ids from migration 13.
+        colorId: "color" in p ? p.color : null,
         categoryId: categoryIds.get(p.cat),
         minStockMilli: M(p.min),
         latestCostPaisa: rupees(p.cost),
@@ -365,7 +381,7 @@ async function main() {
         data: {
           invoiceId: invoice.id,
           productId: l.p.id,
-          unit: l.p.byLength ? (l.p.code === "PRD-0011" ? "FEET" : "METER") : "PIECE",
+          unit: l.p.byLength ? (l.p.code === "PRD-0011" ? "ft" : "m") : "pcs",
           qtyMilli: M(l.pieces),
           ratePaisa: isSample ? 0 : l.rate,
           unitCostPaisa: l.p.latestCostPaisa,
@@ -401,7 +417,7 @@ async function main() {
           invoiceId: invoice.id,
           productId: null,
           description: "Extension board 4-way (bought from market)",
-          unit: "PIECE",
+          unit: "pcs",
           qtyMilli: M(qty),
           ratePaisa: rate,
           unitCostPaisa: rupees(800),

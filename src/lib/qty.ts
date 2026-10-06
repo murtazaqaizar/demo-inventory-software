@@ -3,27 +3,35 @@
 // Every page parses, formats and multiplies through here so no screen does its
 // own rounding. Safe to import from client components (no server imports).
 
-export type Unit = "PIECE" | "METER" | "FEET";
+// A unit as the screens need it. Units are the shop's own list (Unit table,
+// managed on /categories); `decimals` decides whether 2.5 may be entered.
+export type Unit = { name: string; short: string; decimals: boolean };
+// With id, for dropdowns that submit a choice.
+export type UnitOption = Unit & { id: string };
 
-export const UNITS: { value: Unit; label: string; short: string }[] = [
-  { value: "PIECE", label: "Piece", short: "pcs" },
-  { value: "METER", label: "Meter", short: "m" },
-  { value: "FEET", label: "Feet", short: "ft" },
-];
+/** What a product without a category is counted in. Matches the seeded `unit_piece` row. */
+export const PIECE: Unit = { name: "Piece", short: "pcs", decimals: false };
+export const PIECE_UNIT_ID = "unit_piece";
 
 export const MILLI = 1000;
 
-export function unitShort(unit: Unit | null | undefined): string {
-  return UNITS.find((u) => u.value === unit)?.short ?? "pcs";
+// Bill and return lines store only the unit's short label (a snapshot), so the
+// display helpers accept either a Unit or that label.
+type UnitLike = Unit | string | null | undefined;
+const shortOf = (u: UnitLike) => (typeof u === "string" ? u : (u?.short ?? PIECE.short));
+
+export function unitShort(unit: UnitLike): string {
+  return shortOf(unit);
 }
 
 export function unitLabel(unit: Unit | null | undefined): string {
-  return UNITS.find((u) => u.value === unit)?.label ?? "Piece";
+  return unit?.name ?? PIECE.name;
 }
 
 /** A product's unit: its category's, or PIECE when it has no category. */
-export function unitOf(product: { category?: { unit: string } | null }): Unit {
-  return (product.category?.unit as Unit | undefined) ?? "PIECE";
+export function unitOf(product: { category?: { unit: Unit } | null }): Unit {
+  const u = product.category?.unit;
+  return u ? { name: u.name, short: u.short, decimals: u.decimals } : PIECE;
 }
 
 /** Typed quantity (number or text like "2.5") → thousandths. Rounds past 3 decimals. */
@@ -44,8 +52,8 @@ export function formatQty(milli: number): string {
 }
 
 /** Thousandths + unit → "16,000 m" / "2.5 ft" / "12 pcs". */
-export function formatQtyUnit(milli: number, unit: Unit | null | undefined): string {
-  return `${formatQty(milli)} ${unitShort(unit)}`;
+export function formatQtyUnit(milli: number, unit: UnitLike): string {
+  return `${formatQty(milli)} ${shortOf(unit)}`;
 }
 
 /**
@@ -63,25 +71,26 @@ export function lineAmount(qtyMilli: number, ratePaisa: number): number {
 
 /**
  * Server-side check for a typed quantity. Returns an error message, or null when fine.
- * Pieces must be whole; meter/feet allow up to 3 decimals.
+ * Units without decimals need whole numbers; the rest allow up to 3 decimals.
  */
 export function qtyError(milli: number, unit: Unit, { allowZero = false } = {}): string | null {
   if (!Number.isFinite(milli)) return "Enter a valid quantity";
   if (milli < 0 || (!allowZero && milli === 0)) return "Quantity must be more than zero";
-  if (unit === "PIECE" && milli % MILLI !== 0) return "Pieces must be a whole number";
+  if (!unit.decimals && milli % MILLI !== 0) return `${unit.name} must be a whole number`;
   return null;
 }
 
-/** Step attribute for quantity inputs: decimals for meter/feet, whole numbers for pieces. */
+/** Step attribute for quantity inputs. */
 export function qtyStep(unit: Unit | null | undefined): string {
-  return unit === "METER" || unit === "FEET" ? "0.001" : "1";
+  return unit?.decimals ? "0.001" : "1";
 }
 
 /** Total of lines that may mix units → "12 pcs + 250.5 m". Units never add across. */
-export function formatQtyTotals(lines: { qtyMilli: number; unit: Unit }[]): string {
-  const sums = new Map<Unit, number>();
-  for (const l of lines) sums.set(l.unit, (sums.get(l.unit) ?? 0) + l.qtyMilli);
-  return UNITS.filter((u) => sums.has(u.value))
-    .map((u) => formatQtyUnit(sums.get(u.value)!, u.value))
-    .join(" + ");
+export function formatQtyTotals(lines: { qtyMilli: number; unit: UnitLike }[]): string {
+  const sums = new Map<string, number>();
+  for (const l of lines) {
+    const k = shortOf(l.unit);
+    sums.set(k, (sums.get(k) ?? 0) + l.qtyMilli);
+  }
+  return [...sums].map(([short, milli]) => formatQtyUnit(milli, short)).join(" + ");
 }

@@ -16,7 +16,8 @@ import {
   stockDelta,
 } from "@/lib/purchasing";
 import { audit } from "@/lib/audit";
-import { qtyError, toMilli, type Unit } from "@/lib/qty";
+import { PRODUCT_UNIT } from "@/lib/products";
+import { qtyError, toMilli, unitOf } from "@/lib/qty";
 
 // `purchaseId` is returned on create so the form can send you straight to the
 // new purchase's detail page instead of back to the list.
@@ -65,18 +66,18 @@ function computeLines(d: z.infer<typeof purchaseSchema>) {
   );
 }
 
-// Each line's quantity must suit its product's unit: whole pieces, up to 3 decimals
-// for meter/feet. Returns an error message naming the product, or null.
+// Each line's quantity must suit its product's unit: whole numbers unless the unit
+// allows decimals (up to 3). Returns an error message naming the product, or null.
 async function lineUnitError(items: { productId: string; qty: number }[]): Promise<string | null> {
   const products = await prisma.product.findMany({
     where: { id: { in: items.map((i) => i.productId) } },
-    select: { id: true, name: true, category: { select: { unit: true } } },
+    select: { id: true, name: true, ...PRODUCT_UNIT },
   });
   const byId = new Map(products.map((p) => [p.id, p]));
   for (const it of items) {
     const p = byId.get(it.productId);
     if (!p) return "A product on this purchase no longer exists";
-    const e = qtyError(toMilli(it.qty), (p.category?.unit as Unit | undefined) ?? "PIECE");
+    const e = qtyError(toMilli(it.qty), unitOf(p));
     if (e) return `${p.name}: ${e}`;
   }
   return null;

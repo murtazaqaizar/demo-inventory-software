@@ -22,7 +22,7 @@ export default async function InvoicePrintPage({
 
   const invoice = await prisma.invoice.findUnique({
     where: { id },
-    include: { customer: true, items: { include: { product: true } }, payments: true },
+    include: { customer: true, items: { include: { product: { include: { color: { select: { name: true } } } } } }, payments: true },
   });
   if (!invoice) notFound();
 
@@ -126,7 +126,7 @@ export default async function InvoicePrintPage({
                   <span className="font-medium">{it.product?.name ?? it.description}</span>{" "}
                   {it.product && (
                     <span className="text-ink-muted">
-                      {[it.product.size, it.product.variant, it.product.color].filter(Boolean).join(" · ")}
+                      {[it.product.size, it.product.variant, it.product.color?.name].filter(Boolean).join(" · ")}
                     </span>
                   )}
                   {it.isSample && (

@@ -14,7 +14,7 @@ import {
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
 import { formatPKR } from "@/lib/money";
-import { UNITS, formatQtyUnit, lineAmount, qtyStep, toMilli, unitLabel, unitShort, type Unit } from "@/lib/qty";
+import { PIECE, PIECE_UNIT_ID, formatQtyUnit, lineAmount, qtyStep, toMilli, type Unit, type UnitOption } from "@/lib/qty";
 
 type CustomerOpt = { id: string; name: string; isCash: boolean };
 // A "stock" line sells a product, in that product's unit. A "custom" line is free
@@ -24,7 +24,7 @@ type Line = {
   kind: "stock" | "custom";
   productId: string;
   description: string;
-  unit: Unit; // custom lines only — a stock line uses its product's unit
+  unitId: string; // custom lines only — a stock line uses its product's unit
   qty: string;
   rateRs: string;
   costRs: string; // custom lines only
@@ -33,7 +33,7 @@ type Line = {
 };
 type Pay = { method: "CASH" | "CHEQUE" | "ONLINE"; amountRs: string; chequeNumber: string; chequeBank: string; chequeDate: string };
 
-const emptyLine: Line = { kind: "stock", productId: "", description: "", unit: "PIECE", qty: "", rateRs: "", costRs: "", isSample: false };
+const emptyLine: Line = { kind: "stock", productId: "", description: "", unitId: PIECE_UNIT_ID, qty: "", rateRs: "", costRs: "", isSample: false };
 const emptyCustom: Line = { ...emptyLine, kind: "custom" };
 const emptyPay: Pay = { method: "CASH", amountRs: "", chequeNumber: "", chequeBank: "", chequeDate: "" };
 
@@ -45,7 +45,7 @@ export type BillEdit = {
   lines: {
     productId: string | null;
     description: string | null;
-    unit: Unit;
+    unit: string; // short label snapshot from the saved line
     qty: number; // in the unit (not thousandths)
     rateRs: number;
     costRs: number;
@@ -57,11 +57,13 @@ export type BillEdit = {
 export function BillingBuilder({
   products,
   customers,
+  units,
   today,
   edit,
 }: {
   products: PickerProduct[];
   customers: CustomerOpt[];
+  units: UnitOption[]; // for custom lines
   // Today comes from the server rather than the browser: it is the server's
   // clock that decides whether a saved date counts as "today", and reading the
   // browser's during render would differ from the server-rendered HTML.
@@ -87,7 +89,7 @@ export function BillingBuilder({
           kind: l.productId ? ("stock" as const) : ("custom" as const),
           productId: l.productId ?? "",
           description: l.description ?? "",
-          unit: l.unit,
+          unitId: units.find((u) => u.short === l.unit)?.id ?? PIECE_UNIT_ID,
           qty: String(l.qty),
           rateRs: l.isSample ? "" : String(l.rateRs),
           costRs: !l.productId && l.costRs ? String(l.costRs) : "",
@@ -129,9 +131,9 @@ export function BillingBuilder({
     if (!productId || !customerId || selectedCustomer?.isCash) return;
     const last = await getLastPrice(customerId, productId);
     if (last) {
-      const unit = products.find((p) => p.id === productId)?.unit ?? "PIECE";
+      const unit = products.find((p) => p.id === productId)?.unit ?? PIECE;
       updateLine(i, {
-        lastHint: `Last: Rs ${last.rateRs.toFixed(2)} / ${unitLabel(unit).toLowerCase()}`,
+        lastHint: `Last: Rs ${last.rateRs.toFixed(2)} / ${unit.short}`,
         rateRs: lines[i].rateRs || String(last.rateRs),
       });
     }
@@ -158,7 +160,7 @@ export function BillingBuilder({
             }
           : {
               description: l.description.trim(),
-              unit: l.unit,
+              unitId: l.unitId,
               qty: Number(l.qty),
               rateRs: Number(l.rateRs) || 0,
               costRs: Number(l.costRs) || undefined,
@@ -276,8 +278,12 @@ export function BillingBuilder({
 
         <div className="space-y-5">
           {lines.map((l, i) => {
-            const unit: Unit =
-              l.kind === "custom" ? l.unit : (products.find((p) => p.id === l.productId)?.unit ?? "PIECE");
+            // A stock line has no unit until a product is picked: show neutral labels
+            // rather than defaulting to "pcs" (that read as "cost per piece" on feet goods).
+            const unit: Unit | null =
+              l.kind === "custom"
+                ? (units.find((u) => u.id === l.unitId) ?? PIECE)
+                : (products.find((p) => p.id === l.productId)?.unit ?? null);
             const removeBtn = (
               <Button
                 type="button"
@@ -295,8 +301,8 @@ export function BillingBuilder({
                 type="number"
                 min={0}
                 step={qtyStep(unit)}
-                placeholder={`Qty (${unitShort(unit)})`}
-                aria-label={`Quantity in ${unitShort(unit)}`}
+                placeholder={unit ? `Qty (${unit.short})` : "Qty"}
+                aria-label={unit ? `Quantity in ${unit.short}` : "Quantity"}
                 value={l.qty}
                 onChange={(e) => updateLine(i, { qty: e.target.value })}
               />
@@ -306,8 +312,8 @@ export function BillingBuilder({
                 type="number"
                 min={0}
                 step="0.01"
-                placeholder={`Rate/${unitShort(unit)} Rs`}
-                aria-label={`Rate per ${unitLabel(unit).toLowerCase()} in rupees`}
+                placeholder={unit ? `Rate/${unit.short} Rs` : "Rate Rs"}
+                aria-label={unit ? `Rate per ${unit.name.toLowerCase()} in rupees` : "Rate in rupees"}
                 value={l.isSample ? "" : l.rateRs}
                 disabled={l.isSample}
                 onChange={(e) => updateLine(i, { rateRs: e.target.value })}
@@ -329,13 +335,13 @@ export function BillingBuilder({
                       onChange={(e) => updateLine(i, { description: e.target.value })}
                     />
                     <Select
-                      value={l.unit}
-                      onChange={(e) => updateLine(i, { unit: e.target.value as Unit })}
+                      value={l.unitId}
+                      onChange={(e) => updateLine(i, { unitId: e.target.value })}
                       aria-label="Unit"
                     >
-                      {UNITS.map((u) => (
-                        <option key={u.value} value={u.value}>
-                          {u.label}
+                      {units.map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name}
                         </option>
                       ))}
                     </Select>
@@ -345,7 +351,7 @@ export function BillingBuilder({
                   </div>
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
                     <label htmlFor={`cost-${i}`} className="text-ink-muted">
-                      Your cost per {unitLabel(unit).toLowerCase()} (optional, for profit)
+                      Your cost per {(unit ?? PIECE).name.toLowerCase()} (optional, for profit)
                     </label>
                     <div className="w-36">
                       <Input

@@ -1,6 +1,5 @@
 import { prisma } from "@/lib/prisma";
 import { num } from "@/lib/sql";
-import type { Unit } from "@/lib/qty";
 
 // Current stock (in thousandths of the product unit — see src/lib/qty.ts) is the sum of all movement deltas — never a mutable
 // counter, so the count can always be reconciled against its history.
@@ -21,7 +20,7 @@ export type LowStockProduct = {
   size: string | null;
   variant: string | null;
   minStockMilli: number;
-  unit: Unit;
+  unit: string; // short label, e.g. "m"
   qty: number; // thousandths
 };
 
@@ -32,13 +31,14 @@ export async function getLowStock(): Promise<LowStockProduct[]> {
     (Omit<LowStockProduct, "qty"> & { qty: number | string })[]
   >`
     SELECT p."id", p."name", p."size", p."variant", p."minStockMilli",
-           COALESCE(c."unit", 'PIECE')::text AS "unit",
+           COALESCE(un."short", 'pcs') AS "unit",
            COALESCE(SUM(m."qtyMilli"), 0) AS "qty"
     FROM "Product" p
     LEFT JOIN "Category" c ON c."id" = p."categoryId"
+    LEFT JOIN "Unit" un ON un."id" = c."unitId"
     LEFT JOIN "StockMovement" m ON m."productId" = p."id"
     WHERE p."active" = true
-    GROUP BY p."id", p."name", p."size", p."variant", p."minStockMilli", c."unit"
+    GROUP BY p."id", p."name", p."size", p."variant", p."minStockMilli", un."short"
     HAVING COALESCE(SUM(m."qtyMilli"), 0) <= p."minStockMilli"
     ORDER BY (COALESCE(SUM(m."qtyMilli"), 0) - p."minStockMilli") ASC, p."name" ASC
   `;

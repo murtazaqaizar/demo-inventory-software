@@ -9,8 +9,8 @@ import { requireUserApi, requireOwnerApi } from "@/lib/guards";
 import { rupeesToPaisa, formatPKR } from "@/lib/money";
 import { dateFromInput } from "@/lib/dates";
 import { getStockMap } from "@/lib/stock";
-import { PRODUCT_UNIT } from "@/lib/products";
-import { lineAmount, qtyError, toMilli, unitOf, type Unit } from "@/lib/qty";
+import { PRODUCT_UNIT, unitsById } from "@/lib/products";
+import { PIECE, lineAmount, qtyError, toMilli, unitOf } from "@/lib/qty";
 import { getCustomerBalance } from "@/lib/receivables";
 import { audit } from "@/lib/audit";
 import {
@@ -48,15 +48,15 @@ export type InvoiceResult =
     };
 
 // Quantities on the stock check are thousandths of the product's unit.
-export type ShortStock = { name: string; unit: Unit; available: number; requested: number };
+export type ShortStock = { name: string; unit: string; available: number; requested: number };
 
 // A line is either a stock line (productId set) or a CUSTOM line: free text for
 // goods bought from outside for this customer (productId blank, description set).
-// qty is in the line's unit and may have decimals for meter/feet.
+// qty is in the line's unit and may have decimals when that unit allows them.
 const itemSchema = z.object({
   productId: z.string().optional(),
   description: z.string().trim().max(120).optional(),
-  unit: z.enum(["PIECE", "METER", "FEET"]).default("PIECE"), // custom lines only; stock lines use the product's
+  unitId: z.string().optional(), // custom lines only (a Unit id); stock lines use the product's
   qty: z.coerce.number().positive("Quantity must be more than zero"),
   rateRs: z.coerce.number().min(0).default(0),
   costRs: z.coerce.number().min(0).optional(), // custom lines only: what it cost you
@@ -107,7 +107,10 @@ async function buildLines(
   items: z.infer<typeof itemSchema>[]
 ): Promise<{ lines: BuiltLine[] } | { error: string }> {
   const ids = items.map((i) => i.productId).filter((id): id is string => Boolean(id));
-  const products = await prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_UNIT });
+  const [products, customUnits] = await Promise.all([
+    prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_UNIT }),
+    unitsById(items.map((i) => i.unitId).filter((id): id is string => Boolean(id))),
+  ]);
   const byId = new Map(products.map((p) => [p.id, p]));
 
   const lines: BuiltLine[] = [];
@@ -123,7 +126,7 @@ async function buildLines(
       lines.push({
         productId: product.id,
         description: null,
-        unit,
+        unit: unit.short,
         qtyMilli,
         ratePaisa,
         unitCostPaisa: product.latestCostPaisa,
@@ -132,12 +135,13 @@ async function buildLines(
       });
     } else {
       if (!it.description) return { error: "A custom item needs a name." };
-      const e = qtyError(qtyMilli, it.unit);
+      const unit = (it.unitId && customUnits.get(it.unitId)) || PIECE;
+      const e = qtyError(qtyMilli, unit);
       if (e) return { error: `${it.description}: ${e}` };
       lines.push({
         productId: null,
         description: it.description,
-        unit: it.unit,
+        unit: unit.short,
         qtyMilli,
         ratePaisa,
         unitCostPaisa: it.costRs ? rupeesToPaisa(it.costRs) : 0,
@@ -159,7 +163,7 @@ const belowCostNames = (lines: BuiltLine[]) =>
 // Stock lines asking for more than is on the shelf. `returning` = quantity the old
 // version of an edited bill is about to put back.
 async function findShortStock(lines: BuiltLine[], returning = new Map<string, number>()): Promise<ShortStock[]> {
-  const needed = new Map<string, { name: string; unit: Unit; total: number }>();
+  const needed = new Map<string, { name: string; unit: string; total: number }>();
   for (const l of lines) {
     if (!l.productId) continue;
     const prev = needed.get(l.productId);

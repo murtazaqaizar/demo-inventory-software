@@ -17,9 +17,32 @@ export async function nextProductCode(): Promise<string> {
 export async function listCategories() {
   return prisma.category.findMany({
     orderBy: { name: "asc" },
-    select: { id: true, name: true, unit: true },
+    select: { id: true, name: true, unit: { select: UNIT_FIELDS } },
+  });
+}
+
+// Units picked on custom (free-text) bill/return lines, by id, in one query.
+export async function unitsById(ids: string[]) {
+  const rows = await prisma.unit.findMany({ where: { id: { in: ids } }, select: { id: true, ...UNIT_FIELDS } });
+  return new Map(rows.map((u) => [u.id, u]));
+}
+
+// The shop's own units (piece, meter, kg, dozen…), for dropdowns.
+export async function listUnits() {
+  return prisma.unit.findMany({
+    orderBy: { name: "asc" },
+    select: { id: true, ...UNIT_FIELDS },
   });
 }
 
 // Include for any product query whose page shows quantities: the unit comes from the category.
-export const PRODUCT_UNIT = { category: { select: { unit: true } } } as const;
+export const UNIT_FIELDS = { name: true, short: true, decimals: true } as const;
+export const PRODUCT_UNIT = { category: { select: { unit: { select: UNIT_FIELDS } } } } as const;
+export const COLOR_FIELDS = { id: true, name: true, hex: true } as const;
+// Unit + color: what any screen listing products needs.
+export const PRODUCT_INCLUDE = { ...PRODUCT_UNIT, color: { select: COLOR_FIELDS } } as const;
+
+// The shop's color list, for the product form's swatch dropdown.
+export async function listColors() {
+  return prisma.color.findMany({ orderBy: { name: "asc" }, select: COLOR_FIELDS });
+}

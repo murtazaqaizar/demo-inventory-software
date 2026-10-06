@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { getStockMap } from "@/lib/stock";
-import { PRODUCT_UNIT } from "@/lib/products";
+import { PRODUCT_INCLUDE, listUnits } from "@/lib/products";
 import { unitOf } from "@/lib/qty";
 import { todayInputValue } from "@/lib/dates";
 import { PageHeader } from "@/components/ui";
@@ -11,7 +11,7 @@ export default async function NewBillPage() {
   await requireUser();
 
   const [products, customers] = await Promise.all([
-    prisma.product.findMany({ where: { active: true }, include: PRODUCT_UNIT, orderBy: { code: "asc" } }),
+    prisma.product.findMany({ where: { active: true }, include: PRODUCT_INCLUDE, orderBy: { code: "asc" } }),
     prisma.customer.findMany({ where: { active: true }, orderBy: [{ isCashCustomer: "desc" }, { name: "asc" }] }),
   ]);
   const stock = await getStockMap(products.map((p) => p.id));
@@ -29,11 +29,13 @@ export default async function NewBillPage() {
           name: p.name,
           size: p.size,
           variant: p.variant,
-          color: p.color,
+          color: p.color?.name,
+          colorHex: p.color?.hex,
           stock: stock.get(p.id) ?? 0,
           unit: unitOf(p),
         }))}
         customers={customers.map((c) => ({ id: c.id, name: c.name, isCash: c.isCashCustomer }))}
+        units={await listUnits()}
         today={todayInputValue()}
       />
     </div>

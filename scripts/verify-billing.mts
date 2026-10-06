@@ -63,7 +63,7 @@ type Tx = Prisma.TransactionClient;
 const line = (productId: string | null, over: Partial<Record<string, unknown>> = {}) => ({
   productId,
   description: null as string | null,
-  unit: "PIECE" as const,
+  unit: "pcs",
   qtyMilli: 10_000,
   ratePaisa: 15_000,
   unitCostPaisa: 10_000,
@@ -111,11 +111,11 @@ try {
 
       // --- 1b. decimal quantity + custom line -------------------------------
       console.log("\n1b. Decimal meters and a custom (outside-bought) line");
-      const wire = await tx.category.create({ data: { name: `${TAG} wire`, unit: "METER" } });
+      const wire = await tx.category.create({ data: { name: `${TAG} wire`, unitId: "unit_meter" } });
       const p3 = await tx.product.create({ data: { code: `${TAG}-3`, name: `${TAG} wire`, categoryId: wire.id } });
       const invW = await tx.invoice.create({ data: { customerId: customer.id } });
       await writeSaleStock(tx, invW.id, [
-        line(p3.id, { unit: "METER", qtyMilli: 12_500, ratePaisa: 6_000 }),
+        line(p3.id, { unit: "m", qtyMilli: 12_500, ratePaisa: 6_000 }),
         line(null, { description: "Bought from market", qtyMilli: 2_000, ratePaisa: 95_000, unitCostPaisa: 80_000 }),
       ]);
       check(
