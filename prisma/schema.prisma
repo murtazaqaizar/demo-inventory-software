@@ -527,6 +527,21 @@ model BusinessSettings {
 // foreign key: an expense records the head it was filed under at the time, so
 // renaming or retiring a head later never rewrites last year's books.
 
+// ---------------------------------------------------------------------------
+// Product tags the shop creates up front (client request)
+// ---------------------------------------------------------------------------
+// The list offered in the product form's Category dropdown. `Product.category`
+// stays a plain string, not a foreign key, for the same reason as Expense.category:
+// retiring a tag later must never rewrite the products already filed under it.
+
+model ProductTag {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  // Retired rather than deleted while products still carry it.
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
 model ExpenseHead {
   id        String   @id @default(cuid())
   name      String   @unique

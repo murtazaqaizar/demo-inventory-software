@@ -4,7 +4,7 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { safeAction } from "@/lib/action-errors";
-import { nextProductCode, resolveCategory } from "@/lib/products";
+import { cleanTagName, nextProductCode, resolveCategory } from "@/lib/products";
 import { requireUserApi, requireOwnerApi } from "@/lib/guards";
 import { rupeesToPaisa } from "@/lib/money";
 import { audit } from "@/lib/audit";
@@ -245,4 +245,56 @@ export async function setMinLevel(formData: FormData): Promise<ActionResult> {
     revalidatePath("/products");
     return { ok: true };
 }, (error) => ({ ok: false, error }));
+}
+
+// --- Product tags (client request) -----------------------------------------
+// Create tags up front so they are offered in the Category dropdown when adding
+// stock. Staff add products, so staff may add tags; removing one is owner-only.
+
+export async function addProductTag(formData: FormData): Promise<ActionResult> {
+  return safeAction(async () => {
+    const user = await requireUserApi();
+    const name = cleanTagName(String(formData.get("name") ?? ""));
+    if (!name) return { ok: false, error: "Type a name for the tag" };
+
+    // Case-insensitive, so the list never shows "Discs" and "discs" side by side.
+    const clash = await prisma.productTag.findFirst({
+      where: { name: { equals: name, mode: "insensitive" } },
+    });
+    if (clash) {
+      if (clash.active) return { ok: false, error: `"${clash.name}" is already on the list.` };
+      // Retired earlier — bring it back rather than refusing on the unique index.
+      await prisma.productTag.update({ where: { id: clash.id }, data: { active: true } });
+      await audit(user, "PRODUCT_TAG_RESTORE", "ProductTag", clash.id, `Restored product tag "${clash.name}"`);
+    } else {
+      const created = await prisma.productTag.create({ data: { name } });
+      await audit(user, "PRODUCT_TAG_ADD", "ProductTag", created.id, `Added product tag "${name}"`);
+    }
+    revalidatePath("/products", "layout");
+    return { ok: true };
+  }, (error) => ({ ok: false, error }));
+}
+
+export async function removeProductTag(formData: FormData): Promise<ActionResult> {
+  return safeAction(async () => {
+    const user = await requireOwnerApi();
+    const id = String(formData.get("id") ?? "");
+    if (!id) return { ok: false, error: "Which tag?" };
+
+    const tag = await prisma.productTag.findUnique({ where: { id } });
+    if (!tag) return { ok: false, error: "That tag no longer exists." };
+
+    // Delete-or-hide, like Products and Expense Heads: a product stores the tag's
+    // NAME, so hiding keeps those products tagged while taking it off the dropdown.
+    const used = await prisma.product.count({ where: { category: tag.name } });
+    if (used > 0) {
+      await prisma.productTag.update({ where: { id }, data: { active: false } });
+      await audit(user, "PRODUCT_TAG_HIDE", "ProductTag", id, `Retired product tag "${tag.name}" (${used} products keep it)`);
+    } else {
+      await prisma.productTag.delete({ where: { id } });
+      await audit(user, "PRODUCT_TAG_DELETE", "ProductTag", id, `Deleted unused product tag "${tag.name}"`);
+    }
+    revalidatePath("/products", "layout");
+    return { ok: true };
+  }, (error) => ({ ok: false, error }));
 }

@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
-import { listCategories } from "@/lib/products";
+import { listProductTags } from "@/lib/products";
 import { PageHeader } from "@/components/ui";
 import { ProductForm } from "../../new/product-form";
 
@@ -15,7 +15,7 @@ export default async function EditProductPage({
 
   const [product, categories] = await Promise.all([
     prisma.product.findUnique({ where: { id } }),
-    listCategories(),
+    listProductTags(),
   ]);
   if (!product) notFound();
 
