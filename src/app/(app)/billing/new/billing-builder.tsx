@@ -13,8 +13,9 @@ import {
   TotalReadout,
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
+import { LineColorSelect } from "@/components/line-color";
 import { formatPKR } from "@/lib/money";
-import { PIECE, PIECE_UNIT_ID, formatQtyUnit, lineAmount, qtyStep, toMilli, type Unit, type UnitOption } from "@/lib/qty";
+import { PIECE, PIECE_UNIT_ID, formatQtyUnit, fromMilli, lineAmount, qtyStep, toMilli, type Unit, type UnitOption } from "@/lib/qty";
 
 type CustomerOpt = { id: string; name: string; isCash: boolean };
 // A "stock" line sells a product, in that product's unit. A "custom" line is free
@@ -23,6 +24,7 @@ type CustomerOpt = { id: string; name: string; isCash: boolean };
 type Line = {
   kind: "stock" | "custom";
   productId: string;
+  colorId: string; // stock lines of products with colors; "" otherwise
   description: string;
   unitId: string; // custom lines only — a stock line uses its product's unit
   qty: string;
@@ -33,7 +35,7 @@ type Line = {
 };
 type Pay = { method: "CASH" | "CHEQUE" | "ONLINE"; amountRs: string; chequeNumber: string; chequeBank: string; chequeDate: string };
 
-const emptyLine: Line = { kind: "stock", productId: "", description: "", unitId: PIECE_UNIT_ID, qty: "", rateRs: "", costRs: "", isSample: false };
+const emptyLine: Line = { kind: "stock", productId: "", colorId: "", description: "", unitId: PIECE_UNIT_ID, qty: "", rateRs: "", costRs: "", isSample: false };
 const emptyCustom: Line = { ...emptyLine, kind: "custom" };
 const emptyPay: Pay = { method: "CASH", amountRs: "", chequeNumber: "", chequeBank: "", chequeDate: "" };
 
@@ -44,6 +46,7 @@ export type BillEdit = {
   date: string; // YYYY-MM-DD
   lines: {
     productId: string | null;
+    colorId: string | null;
     description: string | null;
     unit: string; // short label snapshot from the saved line
     qty: number; // in the unit (not thousandths)
@@ -88,6 +91,7 @@ export function BillingBuilder({
       ? edit.lines.map((l) => ({
           kind: l.productId ? ("stock" as const) : ("custom" as const),
           productId: l.productId ?? "",
+          colorId: l.colorId ?? "",
           description: l.description ?? "",
           unitId: units.find((u) => u.short === l.unit)?.id ?? PIECE_UNIT_ID,
           qty: String(l.qty),
@@ -127,7 +131,9 @@ export function BillingBuilder({
   }
 
   async function onProductChange(i: number, productId: string) {
-    updateLine(i, { productId, lastHint: null });
+    // A one-color product needs no choice; otherwise the counter picks.
+    const colors = products.find((p) => p.id === productId)?.colors ?? [];
+    updateLine(i, { productId, colorId: colors.length === 1 ? colors[0].id : "", lastHint: null });
     if (!productId || !customerId || selectedCustomer?.isCash) return;
     const last = await getLastPrice(customerId, productId);
     if (last) {
@@ -139,8 +145,50 @@ export function BillingBuilder({
     }
   }
 
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Client B: "I have 45, the order is 100 — let me add the other 55 from outside."
+  // Each short line keeps what's on the shelf; the rest becomes a custom line
+  // (bought from outside) at the same rate, so stock never goes negative.
+  function splitFromOutside(short: ShortStock[]) {
+    setLines((prev) => {
+      let next = [...prev];
+      const added: Line[] = [];
+      for (const s of short) {
+        let need = s.requested - Math.max(0, s.available); // thousandths still missing
+        const outside = need;
+        const matches = next
+          .map((l, idx) => ({ l, idx }))
+          .filter(({ l }) => l.kind === "stock" && l.productId === s.productId && (l.colorId || null) === s.colorId);
+        const rate = matches[0]?.l.rateRs ?? "";
+        for (const { l, idx } of [...matches].reverse()) {
+          if (need <= 0) break;
+          const have = toMilli(l.qty || 0) || 0;
+          const take = Math.min(have, need);
+          need -= take;
+          next[idx] = { ...l, qty: String(fromMilli(have - take)) };
+        }
+        const product = products.find((p) => p.id === s.productId);
+        const colorName = product?.colors?.find((c) => c.id === s.colorId)?.name;
+        added.push({
+          ...emptyCustom,
+          description: [product?.name, product?.size, product?.variant, colorName].filter(Boolean).join(" · ") + " (from outside)",
+          unitId: units.find((u) => u.short === product?.unit?.short)?.id ?? PIECE_UNIT_ID,
+          qty: String(fromMilli(outside)),
+          rateRs: rate,
+        });
+      }
+      // Drop stock lines emptied by the split (keep at least one line on the bill).
+      next = next.filter((l) => !(l.kind === "stock" && l.productId && (toMilli(l.qty || 0) || 0) === 0));
+      return [...next, ...added];
+    });
+    clearWarnings();
+    setNotice("Split done: what's in stock stays on the bill, the rest was added as \"from outside\" lines at the same rate. Add their cost if you know it, then save.");
+  }
+
   function clearWarnings() {
     setError(null);
+    setNotice(null);
     setBelowCost(null);
     setShortStock(null);
     setCreditWarning(null);
@@ -154,6 +202,7 @@ export function BillingBuilder({
         l.kind === "stock"
           ? {
               productId: l.productId,
+              colorId: l.colorId || undefined,
               qty: Number(l.qty),
               rateRs: l.isSample ? 0 : Number(l.rateRs) || 0,
               isSample: l.isSample,
@@ -169,6 +218,13 @@ export function BillingBuilder({
       );
     if (items.length === 0) {
       setError("Add at least one line with a product (or custom item name) and quantity.");
+      return;
+    }
+    const noColor = lines.find(
+      (l) => l.kind === "stock" && l.productId && !l.colorId && (products.find((p) => p.id === l.productId)?.colors?.length ?? 0) > 0
+    );
+    if (noColor) {
+      setError(`Pick a color for ${products.find((p) => p.id === noColor.productId)?.name}.`);
       return;
     }
     if (!customerId) {
@@ -391,9 +447,15 @@ export function BillingBuilder({
                     />
                     Free sample / bonus
                   </label>
+                  {product && (product.colors?.length ?? 0) > 0 && (
+                    <LineColorSelect product={product} value={l.colorId} onChange={(colorId) => updateLine(i, { colorId })} />
+                  )}
                   {product && typeof product.stock === "number" && (
                     <span className="text-ink-muted">
-                      In stock: {formatQtyUnit(product.stock, product.unit)}
+                      In stock:{" "}
+                      {l.colorId
+                        ? formatQtyUnit(product.colorStock?.[l.colorId] ?? 0, product.unit)
+                        : formatQtyUnit(product.stock, product.unit)}
                     </span>
                   )}
                   {l.lastHint && <span className="text-ink-muted">{l.lastHint}</span>}
@@ -495,7 +557,10 @@ export function BillingBuilder({
               </li>
             ))}
           </ul>
-          <div className="mt-3 flex gap-2">
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button type="button" onClick={() => splitFromOutside(shortStock)} disabled={pending}>
+              Use what&apos;s in stock + add the rest from outside
+            </Button>
             <Button type="button" variant="danger" onClick={() => proceed("shortStock")} disabled={pending}>
               Sell anyway (stock goes negative)
             </Button>
@@ -536,6 +601,7 @@ export function BillingBuilder({
         </Panel>
       )}
 
+      {notice && <p className="text-[13px] text-ok">{notice}</p>}
       {error && <p className="text-[13px] text-bad">{error}</p>}
 
       {/* Running totals travel with the form — you never scroll up to check the

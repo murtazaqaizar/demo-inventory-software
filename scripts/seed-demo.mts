@@ -154,18 +154,18 @@ async function main() {
   await prisma.unit.create({ data: { name: "Kilogram", short: "kg", decimals: true } });
   await prisma.unit.create({ data: { name: "Dozen", short: "dz", decimals: false } });
 
-  const categorySpecs = [
-    { key: "abr", name: "Abrasives", unitId: "unit_piece" },
-    { key: "tools", name: "Hand Tools", unitId: "unit_piece" },
-    { key: "safety", name: "Safety & Welding", unitId: "unit_piece" },
-    { key: "wire", name: "Electric Wire", unitId: "unit_meter" },
-    { key: "pipe", name: "PVC Pipe", unitId: "unit_feet" },
-  ] as const;
+  // Products have no name of their own (client B, 2026-10-08): the category IS the
+  // product ("Cutting Disc", "PVC Pipe"), and size + variant tell items apart. So
+  // each product below gets its own category, created on first use.
+  const unitFor = { abr: "unit_piece", tools: "unit_piece", safety: "unit_piece", wire: "unit_meter", pipe: "unit_feet" } as const;
   const categoryIds = new Map<string, string>();
-  for (const c of categorySpecs) {
-    const row = await prisma.category.create({ data: { name: c.name, unitId: c.unitId } });
-    categoryIds.set(c.key, row.id);
-  }
+  const categoryFor = async (name: string, cat: keyof typeof unitFor) => {
+    if (!categoryIds.has(name)) {
+      const row = await prisma.category.create({ data: { name, unitId: unitFor[cat] } });
+      categoryIds.set(name, row.id);
+    }
+    return categoryIds.get(name)!;
+  };
 
   // min / cost are per one unit of the category (piece, meter or foot).
   const productSpecs = [
@@ -179,11 +179,24 @@ async function main() {
     { code: "PRD-0006", name: "Measuring Tape", size: "5 metre", variant: "Steel", cat: "tools", min: 24, cost: 320 },
     { code: "PRD-0007", name: "Safety Gloves", size: "Large", variant: "Cotton, pair", cat: "safety", min: 40, cost: 150 },
     { code: "PRD-0008", name: "Welding Rod", size: "2.5mm", variant: "5 kg pack", cat: "safety", min: 8, cost: 1_450 },
-    // Sold by length. Opening stock for wire is whole rolls: 200 rolls × 80 m.
-    { code: "PRD-0009", name: "PVC Wire", size: "1.5mm", variant: "Single core", color: "color_red", cat: "wire", min: 1_000, cost: 38 },
-    { code: "PRD-0010", name: "PVC Wire", size: "1.5mm", variant: "Single core", color: "color_black", cat: "wire", min: 1_000, cost: 38 },
-    { code: "PRD-0011", name: "PVC Pipe", size: "1 inch", variant: "Class C", color: "color_grey", cat: "pipe", min: 200, cost: 55 },
+    // Sold by length, in colors (client B, 2026-10-07: "one size of pipe comes in
+    // black, transparent and blue — show me how much of each"). Opening stock is per
+    // color: wire in whole rolls (× 80 m), pipe in feet.
+    {
+      code: "PRD-0009", name: "PVC Wire", size: "1.5mm", variant: "Single core", cat: "wire", min: 1_000, cost: 38,
+      colors: [{ id: "color_red", opening: 120 * 80 }, { id: "color_black", opening: 80 * 80 }],
+    },
+    {
+      code: "PRD-0010", name: "PVC Pipe", size: "1 inch", variant: "Class C", cat: "pipe", min: 200, cost: 55,
+      colors: [{ id: "color_black", opening: 300 }, { id: "color_transparent", opening: 200 }, { id: "color_blue", opening: 150 }],
+    },
   ];
+  // "Transparent" isn't in migration 13's starter palette; the demo adds it.
+  await prisma.color.upsert({
+    where: { id: "color_transparent" },
+    update: {},
+    create: { id: "color_transparent", name: "Transparent", hex: "#e5e7eb" },
+  });
   const products = [];
   for (const p of productSpecs) {
     const created = await prisma.product.create({
@@ -192,33 +205,44 @@ async function main() {
         name: p.name,
         size: p.size,
         variant: p.variant,
-        // Palette ids from migration 13.
-        colorId: "color" in p ? p.color : null,
-        categoryId: categoryIds.get(p.cat),
+        colors: "colors" in p ? { create: p.colors.map((c) => ({ colorId: c.id })) } : undefined,
+        categoryId: await categoryFor(p.name, p.cat as keyof typeof unitFor),
         minStockMilli: M(p.min),
         latestCostPaisa: rupees(p.cost),
       },
     });
-    products.push({ ...created, min: p.min, byLength: p.cat === "wire" || p.cat === "pipe" });
+    products.push({
+      ...created,
+      min: p.min,
+      byLength: p.cat === "wire" || p.cat === "pipe",
+      unitShort: p.cat === "wire" ? "m" : p.cat === "pipe" ? "ft" : "pcs",
+      colorOpenings: "colors" in p ? p.colors : null,
+    });
   }
 
   // Opening stock count. One product is deliberately left thin so the low-stock
   // warning has something to fire on. `stockLeft` then tracks every piece in and
   // out below, because a demo that shows negative stock reads as a broken app.
+  const key = (productId: string, colorId: string | null) => `${productId}|${colorId ?? ""}`;
   const stockLeft = new Map<string, number>();
   for (const [i, p] of products.entries()) {
-    const opening = i === 3 ? 60 : p.byLength ? (p.code === "PRD-0011" ? 1_200 : 200 * 80) : int(400, 900);
-    stockLeft.set(p.id, opening);
-    await prisma.stockMovement.create({
-      data: {
-        productId: p.id,
-        type: "ADJUST",
-        qtyMilli: M(opening),
-        unitCostPaisa: p.latestCostPaisa,
-        reason: "Opening stock count",
-        createdAt: daysAgo(60),
-      },
-    });
+    const openings = p.colorOpenings
+      ? p.colorOpenings.map((c) => ({ colorId: c.id as string | null, qty: c.opening }))
+      : [{ colorId: null, qty: i === 3 ? 60 : int(400, 900) }];
+    for (const o of openings) {
+      stockLeft.set(key(p.id, o.colorId), o.qty);
+      await prisma.stockMovement.create({
+        data: {
+          productId: p.id,
+          colorId: o.colorId,
+          type: "ADJUST",
+          qtyMilli: M(o.qty),
+          unitCostPaisa: p.latestCostPaisa,
+          reason: "Opening stock count",
+          createdAt: daysAgo(60),
+        },
+      });
+    }
   }
 
   // --- Suppliers and two purchases ----------------------------------------
@@ -244,7 +268,7 @@ async function main() {
     await prisma.stockMovement.create({
       data: { productId: p.id, type: "PURCHASE_IN", qtyMilli: M(pieces), unitCostPaisa: unit, purchaseId: cashPurchase.id, createdAt: daysAgo(21) },
     });
-    stockLeft.set(p.id, (stockLeft.get(p.id) ?? 0) + pieces);
+    stockLeft.set(key(p.id, null), (stockLeft.get(key(p.id, null)) ?? 0) + pieces);
   }
   await prisma.moneyMovement.create({
     data: { accountId: cash.id, type: "SUPPLIER_PAYMENT", amountPaisa: -cashPurchaseTotal, note: `Purchase #${cashPurchase.number} — ${supplierA.name}`, date: daysAgo(21) },
@@ -279,7 +303,7 @@ async function main() {
     await prisma.stockMovement.create({
       data: { productId: l.p.id, type: "PURCHASE_IN", qtyMilli: M(l.pieces), unitCostPaisa: landed, purchaseId: creditPurchase.id, createdAt: daysAgo(12) },
     });
-    stockLeft.set(l.p.id, (stockLeft.get(l.p.id) ?? 0) + l.pieces);
+    stockLeft.set(key(l.p.id, null), (stockLeft.get(key(l.p.id, null)) ?? 0) + l.pieces);
     // Latest-cost method: the newest landed cost becomes the product's cost.
     await prisma.product.update({ where: { id: l.p.id }, data: { latestCostPaisa: landed } });
     l.p.latestCostPaisa = landed;
@@ -358,15 +382,18 @@ async function main() {
     for (let i = 0; i < b.lines; i++) {
       const p = products[int(0, products.length - 1)];
       if (chosen.some((c) => c.p.id === p.id)) continue;
-      const available = stockLeft.get(p.id) ?? 0;
-      // Leave the thin product thin: never sell it down past its minimum level.
-      const sellable = Math.min(p.byLength ? 300 : 30, available - p.min);
+      const colorId = p.colorOpenings ? p.colorOpenings[int(0, p.colorOpenings.length - 1)].id : null;
+      const available = stockLeft.get(key(p.id, colorId)) ?? 0;
+      // Leave the thin product thin: never sell it down past its minimum level
+      // (for a colored product, that color's share of the minimum).
+      const floor = p.colorOpenings ? p.min / p.colorOpenings.length : p.min;
+      const sellable = Math.min(p.byLength ? 120 : 30, available - floor);
       if (sellable < 4) continue;
       // Wire and pipe go out in lengths with halves (12.5 m); everything else by the piece.
       const pieces = p.byLength ? int(10, Math.floor(sellable) - 1) + int(0, 1) * 0.5 : int(4, sellable);
       // Sell at a margin over the latest cost.
       const rate = Math.round((p.latestCostPaisa * (120 + int(5, 45))) / 100);
-      chosen.push({ p, pieces, rate });
+      chosen.push({ p, colorId, pieces, rate });
     }
     if (chosen.length === 0) continue;
 
@@ -381,8 +408,9 @@ async function main() {
         data: {
           invoiceId: invoice.id,
           productId: l.p.id,
-          unit: l.p.byLength ? (l.p.code === "PRD-0011" ? "ft" : "m") : "pcs",
+          unit: l.p.unitShort,
           qtyMilli: M(l.pieces),
+          colorId: l.colorId,
           ratePaisa: isSample ? 0 : l.rate,
           unitCostPaisa: l.p.latestCostPaisa,
           isSample,
@@ -393,6 +421,7 @@ async function main() {
           productId: l.p.id,
           type: isSample ? "SAMPLE_OUT" : "SALE_OUT",
           qtyMilli: -M(l.pieces),
+          colorId: l.colorId,
           unitCostPaisa: l.p.latestCostPaisa,
           invoiceId: invoice.id,
           createdAt: date,
@@ -403,7 +432,7 @@ async function main() {
         update: { lastRatePaisa: isSample ? 0 : l.rate },
         create: { customerId: b.customer.id, productId: l.p.id, lastRatePaisa: isSample ? 0 : l.rate },
       });
-      stockLeft.set(l.p.id, (stockLeft.get(l.p.id) ?? 0) - l.pieces);
+      stockLeft.set(key(l.p.id, l.colorId), (stockLeft.get(key(l.p.id, l.colorId)) ?? 0) - l.pieces);
       if (!isSample) total += amount(l.pieces, l.rate);
     }
 

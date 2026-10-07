@@ -39,8 +39,11 @@ export async function listUnits() {
 export const UNIT_FIELDS = { name: true, short: true, decimals: true } as const;
 export const PRODUCT_UNIT = { category: { select: { unit: { select: UNIT_FIELDS } } } } as const;
 export const COLOR_FIELDS = { id: true, name: true, hex: true } as const;
-// Unit + color: what any screen listing products needs.
-export const PRODUCT_INCLUDE = { ...PRODUCT_UNIT, color: { select: COLOR_FIELDS } } as const;
+// Unit + color variants: what any screen listing products needs. Flatten with colorsOf().
+export const PRODUCT_INCLUDE = {
+  ...PRODUCT_UNIT,
+  colors: { select: { color: { select: COLOR_FIELDS } } },
+} as const;
 
 // The shop's color list, for the product form's swatch dropdown.
 export async function listColors() {

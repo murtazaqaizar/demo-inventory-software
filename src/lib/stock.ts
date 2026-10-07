@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { num } from "@/lib/sql";
+import { stockKey } from "@/lib/variants";
 
 // Current stock (in thousandths of the product unit — see src/lib/qty.ts) is the sum of all movement deltas — never a mutable
 // counter, so the count can always be reconciled against its history.
@@ -11,6 +12,19 @@ export async function getStockMap(productIds?: string[]): Promise<Map<string, nu
   });
   const map = new Map<string, number>();
   for (const g of grouped) map.set(g.productId, g._sum.qtyMilli ?? 0);
+  return map;
+}
+
+// Per-color stock, keyed by stockKey(productId, colorId). Products without colors
+// land under the "" color, so the key also works for them.
+export async function getColorStockMap(productIds?: string[]): Promise<Map<string, number>> {
+  const grouped = await prisma.stockMovement.groupBy({
+    by: ["productId", "colorId"],
+    _sum: { qtyMilli: true },
+    where: productIds ? { productId: { in: productIds } } : undefined,
+  });
+  const map = new Map<string, number>();
+  for (const g of grouped) map.set(stockKey(g.productId, g.colorId), g._sum.qtyMilli ?? 0);
   return map;
 }
 

@@ -85,7 +85,11 @@ export async function updateCategory(formData: FormData): Promise<ActionResult> 
       }
     }
 
-    await prisma.category.update({ where: { id: categoryId }, data: { name, unitId } });
+    // Products carry their category's name (they have no name of their own).
+    await prisma.$transaction([
+      prisma.category.update({ where: { id: categoryId }, data: { name, unitId } }),
+      prisma.product.updateMany({ where: { categoryId }, data: { name } }),
+    ]);
     await audit(
       { id: user.id, username: user.username },
       "CATEGORY_EDIT",
@@ -273,11 +277,15 @@ export async function deleteColor(formData: FormData): Promise<ActionResult> {
     const colorId = String(formData.get("colorId") ?? "");
     const existing = await prisma.color.findUnique({
       where: { id: colorId },
-      include: { _count: { select: { products: true } } },
+      include: { _count: { select: { variants: true, movements: true } } },
     });
     if (!existing) return { ok: false, error: "Color not found" };
-    if (existing._count.products > 0) {
-      return { ok: false, error: `${existing.name} is used by ${existing._count.products} product(s).` };
+    if (existing._count.variants > 0) {
+      return { ok: false, error: `${existing.name} is used by ${existing._count.variants} product(s).` };
+    }
+    // Stock history keeps the color it moved in; deleting would blank it out.
+    if (existing._count.movements > 0) {
+      return { ok: false, error: `${existing.name} has stock history, so it can't be deleted.` };
     }
     await prisma.color.delete({ where: { id: colorId } });
     await audit({ id: user.id, username: user.username }, "COLOR_DELETE", "Color", colorId, `Deleted color ${existing.name}`);

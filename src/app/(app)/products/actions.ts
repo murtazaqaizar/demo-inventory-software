@@ -4,22 +4,22 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { safeAction } from "@/lib/action-errors";
-import { PRODUCT_UNIT, UNIT_FIELDS, nextProductCode } from "@/lib/products";
+import { PRODUCT_INCLUDE, UNIT_FIELDS, nextProductCode } from "@/lib/products";
 import { requireUserApi, requireOwnerApi } from "@/lib/guards";
 import { rupeesToPaisa } from "@/lib/money";
 import { audit } from "@/lib/audit";
 import { PIECE, formatQtyUnit, qtyError, toMilli, unitOf, type Unit } from "@/lib/qty";
+import { colorsOf, lineColorError, stockKey } from "@/lib/variants";
+import { getColorStockMap } from "@/lib/stock";
 
 // Quantities arrive as typed text ("16000", "2.5") in the category's unit and are
 // stored as thousandths (src/lib/qty.ts). Blank = 0.
 const qtyText = z.string().optional().transform((s) => (s && s.trim() ? toMilli(s) : 0));
 
 const productFields = {
-  name: z.string().trim().min(1, "Name is required"),
   size: z.string().optional(),
   variant: z.string().optional(),
-  colorId: z.string().optional(),
-  categoryId: z.string().optional(),
+  categoryId: z.string().min(1, "Pick a category"),
   minStock: qtyText,
 };
 
@@ -31,12 +31,13 @@ const productSchema = z.object({
 
 export type ActionResult = { ok: boolean; error?: string; message?: string };
 
-// A color must be one of the shop's list; anything else (stale form) becomes none.
-async function colorIdOrNull(raw: string | undefined): Promise<string | null> {
-  const id = clean(raw);
-  if (!id) return null;
-  const hit = await prisma.color.findUnique({ where: { id }, select: { id: true } });
-  return hit?.id ?? null;
+// Color variants ticked on the form (checkboxes named "colorIds"), kept only if they
+// are in the shop's list — a stale form can't attach a deleted color.
+async function chosenColorIds(formData: FormData): Promise<string[]> {
+  const ids = [...new Set(formData.getAll("colorIds").map(String).filter(Boolean))];
+  if (ids.length === 0) return [];
+  const rows = await prisma.color.findMany({ where: { id: { in: ids } }, select: { id: true } });
+  return rows.map((r) => r.id);
 }
 
 // The unit a product is counted in comes from its category; none = by the piece.
@@ -44,6 +45,37 @@ async function unitForCategory(categoryId: string | null): Promise<Unit> {
   if (!categoryId) return PIECE;
   const c = await prisma.category.findUnique({ where: { id: categoryId }, select: { unit: { select: UNIT_FIELDS } } });
   return c?.unit ?? PIECE;
+}
+
+// Products have no name of their own (client B, 2026-10-08): the category is the
+// product, and size + variant tell items apart. `Product.name` stores the category's
+// name so every screen, search and report keeps reading it unchanged; renaming a
+// category renames its products (categories/actions.ts).
+async function nameAndClash(
+  categoryId: string,
+  size: string | null,
+  variant: string | null,
+  exceptId?: string
+): Promise<{ name: string } | { error: string }> {
+  const category = await prisma.category.findUnique({ where: { id: categoryId }, select: { name: true } });
+  if (!category) return { error: "That category no longer exists. Refresh the page." };
+  // Same category + size + variant would print identically on a bill.
+  const twin = await prisma.product.findFirst({
+    where: {
+      active: true,
+      categoryId,
+      size: size ? { equals: size, mode: "insensitive" } : null,
+      variant: variant ? { equals: variant, mode: "insensitive" } : null,
+      ...(exceptId ? { id: { not: exceptId } } : {}),
+    },
+    select: { code: true },
+  });
+  if (twin) {
+    return {
+      error: `${category.name}${size ? " " + size : ""}${variant ? " · " + variant : ""} already exists (${twin.code}). Change the size or variant to tell them apart.`,
+    };
+  }
+  return { name: category.name };
 }
 
 function clean(s: string | undefined) {
@@ -61,37 +93,52 @@ export async function createProduct(formData: FormData): Promise<ActionResult> {
     const d = parsed.data;
     const categoryId = clean(d.categoryId);
     const unit = await unitForCategory(categoryId);
+    const colorIds = await chosenColorIds(formData);
 
-    if (d.initialStock) {
-      const e = qtyError(d.initialStock, unit);
+    // With colors, opening stock is entered per color ("opening_<colorId>");
+    // without, it's the single opening-stock field.
+    const openings: { colorId: string | null; qtyMilli: number }[] = colorIds.length
+      ? colorIds.map((id) => {
+          const v = String(formData.get(`opening_${id}`) ?? "").trim();
+          return { colorId: id, qtyMilli: v ? toMilli(v) : 0 };
+        })
+      : [{ colorId: null, qtyMilli: d.initialStock }];
+    for (const o of openings) {
+      if (!o.qtyMilli) continue;
+      const e = qtyError(o.qtyMilli, unit);
       if (e) return { ok: false, error: `Opening stock: ${e}` };
     }
     const minErr = qtyError(d.minStock, unit, { allowZero: true });
     if (minErr) return { ok: false, error: `Low-stock level: ${minErr}` };
 
+    const named = await nameAndClash(categoryId!, clean(d.size), clean(d.variant));
+    if ("error" in named) return { ok: false, error: named.error };
+
     const code = await nextProductCode();
     await prisma.product.create({
       data: {
         code,
-        name: d.name,
+        name: named.name,
         size: clean(d.size),
         variant: clean(d.variant),
-        colorId: await colorIdOrNull(d.colorId),
         categoryId,
+        colors: colorIds.length ? { create: colorIds.map((colorId) => ({ colorId })) } : undefined,
         minStockMilli: d.minStock,
         latestCostPaisa: rupeesToPaisa(d.initialCostRs),
         // First stock count (spec feature 34 note) recorded as an ADJUST movement.
-        movements:
-          d.initialStock > 0
-            ? {
-                create: {
-                  type: "ADJUST",
-                  qtyMilli: d.initialStock,
+        movements: openings.some((o) => o.qtyMilli > 0)
+          ? {
+              create: openings
+                .filter((o) => o.qtyMilli > 0)
+                .map((o) => ({
+                  type: "ADJUST" as const,
+                  qtyMilli: o.qtyMilli,
+                  colorId: o.colorId,
                   unitCostPaisa: rupeesToPaisa(d.initialCostRs),
                   reason: "Opening stock count",
-                },
-              }
-            : undefined,
+                })),
+            }
+          : undefined,
       },
     });
 
@@ -102,6 +149,7 @@ export async function createProduct(formData: FormData): Promise<ActionResult> {
 
 const movementSchema = z.object({
   productId: z.string().min(1),
+  colorId: z.string().optional(), // required when the product has colors
   kind: z.enum(["ADJUST", "RETURN_IN", "SAMPLE_OUT"]),
   qty: z.string().min(1, "Enter a quantity"),
   reason: z.string().optional(),
@@ -116,14 +164,19 @@ export async function recordMovement(formData: FormData): Promise<ActionResult> 
     const user = await requireUserApi();
     const parsed = movementSchema.safeParse(Object.fromEntries(formData));
     if (!parsed.success) return { ok: false, error: "Invalid input" };
-    const { productId, kind, qty, reason } = parsed.data;
+    const { productId, colorId: rawColorId, kind, qty, reason } = parsed.data;
+    const colorId = rawColorId || null;
 
     const product = await prisma.product.findUnique({
       where: { id: productId },
-      include: PRODUCT_UNIT,
+      include: PRODUCT_INCLUDE,
     });
     if (!product) return { ok: false, error: "Product not found" };
     const unit = unitOf(product);
+    const colors = colorsOf(product);
+    const ce = lineColorError(product.name, colors.map((c) => c.id), colorId);
+    if (ce) return { ok: false, error: ce };
+    const colorName = colors.find((c) => c.id === colorId)?.name;
 
     const milli = toMilli(qty);
     const e = qtyError(Math.abs(milli), unit);
@@ -140,6 +193,7 @@ export async function recordMovement(formData: FormData): Promise<ActionResult> 
         productId,
         type: kind,
         qtyMilli: delta,
+        colorId,
         // cost captured so profit stays honest even on samples/returns (feature 18)
         unitCostPaisa: product.latestCostPaisa,
         reason: reason || defaultReason,
@@ -151,7 +205,7 @@ export async function recordMovement(formData: FormData): Promise<ActionResult> 
       "STOCK_MOVEMENT",
       "Product",
       productId,
-      `${defaultReason}: ${delta > 0 ? "+" : "−"}${formatQtyUnit(Math.abs(delta), unit)} of ${product.name}${reason ? ` — ${reason}` : ""}`
+      `${defaultReason}: ${delta > 0 ? "+" : "−"}${formatQtyUnit(Math.abs(delta), unit)} of ${product.name}${colorName ? ` (${colorName})` : ""}${reason ? ` — ${reason}` : ""}`
     );
 
     revalidatePath("/products");
@@ -176,9 +230,33 @@ export async function updateProduct(formData: FormData): Promise<ActionResult> {
 
     const existing = await prisma.product.findUnique({
       where: { id: d.productId },
-      include: PRODUCT_UNIT,
+      include: PRODUCT_INCLUDE,
     });
     if (!existing) return { ok: false, error: "Product not found" };
+
+    // Colors: a color can only be removed when none of it is in stock, and a
+    // product holding stock without colors can't switch to colors (that stock
+    // would belong to no color). Zero it first with Adjust.
+    const newColorIds = await chosenColorIds(formData);
+    const oldColors = colorsOf(existing);
+    const removed = oldColors.filter((c) => !newColorIds.includes(c.id));
+    const added = newColorIds.filter((id) => !oldColors.some((c) => c.id === id));
+    if (removed.length || added.length) {
+      const cs = await getColorStockMap([existing.id]);
+      const stillHeld = removed.filter((c) => (cs.get(stockKey(existing.id, c.id)) ?? 0) !== 0);
+      if (stillHeld.length) {
+        return {
+          ok: false,
+          error: `${stillHeld.map((c) => c.name).join(", ")} still has stock. Bring it to zero with Adjust before removing the color.`,
+        };
+      }
+      if (oldColors.length === 0 && added.length && (cs.get(stockKey(existing.id, null)) ?? 0) !== 0) {
+        return {
+          ok: false,
+          error: "This product has stock that isn't assigned to a color. Bring it to zero with Adjust, then add colors and enter each color's stock.",
+        };
+      }
+    }
 
     const categoryId = clean(d.categoryId);
     const oldUnit = unitOf(existing);
@@ -198,15 +276,21 @@ export async function updateProduct(formData: FormData): Promise<ActionResult> {
     const minErr = qtyError(d.minStock, newUnit, { allowZero: true });
     if (minErr) return { ok: false, error: `Low-stock level: ${minErr}` };
 
+    const named = await nameAndClash(categoryId!, clean(d.size), clean(d.variant), d.productId);
+    if ("error" in named) return { ok: false, error: named.error };
+
     await prisma.product.update({
       where: { id: d.productId },
       data: {
-        name: d.name,
+        name: named.name,
         size: clean(d.size),
         variant: clean(d.variant),
-        colorId: await colorIdOrNull(d.colorId),
         categoryId,
         minStockMilli: d.minStock,
+        colors: {
+          deleteMany: removed.length ? { colorId: { in: removed.map((c) => c.id) } } : undefined,
+          create: added.length ? added.map((colorId) => ({ colorId })) : undefined,
+        },
         // Only the owner may change cost; staff edits leave it untouched.
         ...(user.role === "OWNER" && d.latestCostRs !== undefined
           ? { latestCostPaisa: rupeesToPaisa(d.latestCostRs) }
@@ -214,7 +298,7 @@ export async function updateProduct(formData: FormData): Promise<ActionResult> {
       },
     });
 
-    await audit({ id: user.id, username: user.username }, "PRODUCT_EDIT", "Product", d.productId, `Edited product ${existing.code} — ${d.name}`);
+    await audit({ id: user.id, username: user.username }, "PRODUCT_EDIT", "Product", d.productId, `Edited product ${existing.code} — ${named.name}`);
     revalidatePath("/products");
     return { ok: true };
   }, (error) => ({ ok: false, error }));

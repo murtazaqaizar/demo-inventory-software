@@ -7,7 +7,8 @@ import { safeAction } from "@/lib/action-errors";
 import { TX_OPTIONS } from "@/lib/tx";
 import { requireUserApi } from "@/lib/guards";
 import { rupeesToPaisa, formatPKR } from "@/lib/money";
-import { PRODUCT_UNIT, unitsById } from "@/lib/products";
+import { PRODUCT_INCLUDE, unitsById } from "@/lib/products";
+import { colorsOf, lineColorError } from "@/lib/variants";
 import { PIECE, lineAmount, qtyError, toMilli, unitOf } from "@/lib/qty";
 import { audit } from "@/lib/audit";
 
@@ -21,6 +22,7 @@ const itemSchema = z.object({
   productId: z.string().optional(),
   description: z.string().trim().max(120).optional(),
   unitId: z.string().optional(), // custom lines only (a Unit id); stock lines use the product's
+  colorId: z.string().optional(), // required when the product has colors (one of them)
   qty: z.coerce.number().positive("Quantity must be more than zero"),
   rateRs: z.coerce.number().min(0).default(0),
   costRs: z.coerce.number().min(0).optional(), // custom lines only
@@ -46,7 +48,7 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
 
     const ids = d.items.map((i) => i.productId).filter((id): id is string => Boolean(id));
     const [products, customUnits] = await Promise.all([
-      prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_UNIT }),
+      prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_INCLUDE }),
       unitsById(d.items.map((i) => i.unitId).filter((id): id is string => Boolean(id))),
     ]);
     const byId = new Map(products.map((p) => [p.id, p]));
@@ -59,6 +61,7 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
       description: string | null;
       unit: string; // short label snapshot
       qtyMilli: number;
+      colorId: string | null;
       ratePaisa: number;
       unitCostPaisa: number;
     };
@@ -71,11 +74,15 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
         const unit = unitOf(product);
         const e = qtyError(qtyMilli, unit);
         if (e) return { ok: false, error: `${product.name}: ${e}` };
+        const colorId = it.colorId || null;
+        const ce = lineColorError(product.name, colorsOf(product).map((c) => c.id), colorId);
+        if (ce) return { ok: false, error: ce };
         lines.push({
           productId: product.id,
           description: null,
           unit: unit.short,
           qtyMilli,
+          colorId,
           ratePaisa: rupeesToPaisa(it.rateRs),
           unitCostPaisa: product.latestCostPaisa,
         });
@@ -89,6 +96,7 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
           description: it.description,
           unit: unit.short,
           qtyMilli,
+          colorId: null,
           ratePaisa: rupeesToPaisa(it.rateRs),
           unitCostPaisa: it.costRs ? rupeesToPaisa(it.costRs) : 0,
         });
@@ -117,6 +125,7 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
           productId: l.productId,
           type: "RETURN_IN" as const,
           qtyMilli: l.qtyMilli,
+          colorId: l.colorId,
           unitCostPaisa: l.unitCostPaisa,
           reason: `Return — credit note #${note.number}`,
           creditNoteId: note.id,

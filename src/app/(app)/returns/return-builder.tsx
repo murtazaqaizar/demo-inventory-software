@@ -13,14 +13,15 @@ import {
   TotalReadout,
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
+import { LineColorSelect } from "@/components/line-color";
 import { formatPKR } from "@/lib/money";
 import { PIECE, PIECE_UNIT_ID, lineAmount, qtyStep, toMilli, type Unit, type UnitOption } from "@/lib/qty";
 
 type CustomerOpt = { id: string; name: string; isCash: boolean };
 // "custom" credits a free-text bill line (goods bought from outside): money only, no stock.
-type Line = { kind: "stock" | "custom"; productId: string; description: string; unitId: string; qty: string; rateRs: string };
+type Line = { kind: "stock" | "custom"; productId: string; colorId: string; description: string; unitId: string; qty: string; rateRs: string };
 
-const emptyLine: Line = { kind: "stock", productId: "", description: "", unitId: PIECE_UNIT_ID, qty: "", rateRs: "" };
+const emptyLine: Line = { kind: "stock", productId: "", colorId: "", description: "", unitId: PIECE_UNIT_ID, qty: "", rateRs: "" };
 
 export function ReturnBuilder({
   products,
@@ -58,11 +59,18 @@ export function ReturnBuilder({
       .filter((l) => (l.kind === "stock" ? l.productId : l.description.trim()) && Number(l.qty) > 0)
       .map((l) =>
         l.kind === "stock"
-          ? { productId: l.productId, qty: Number(l.qty), rateRs: Number(l.rateRs) || 0 }
+          ? { productId: l.productId, colorId: l.colorId || undefined, qty: Number(l.qty), rateRs: Number(l.rateRs) || 0 }
           : { description: l.description.trim(), unitId: l.unitId, qty: Number(l.qty), rateRs: Number(l.rateRs) || 0 }
       );
     if (items.length === 0) {
       setError("Add at least one line with a product (or custom item name) and quantity.");
+      return;
+    }
+    const noColor = lines.find(
+      (l) => l.kind === "stock" && l.productId && !l.colorId && (products.find((p) => p.id === l.productId)?.colors?.length ?? 0) > 0
+    );
+    if (noColor) {
+      setError(`Pick a color for ${products.find((p) => p.id === noColor.productId)?.name}.`);
       return;
     }
     startTransition(async () => {
@@ -129,9 +137,17 @@ export function ReturnBuilder({
                 ? (units.find((u) => u.id === l.unitId) ?? PIECE)
                 : (products.find((p) => p.id === l.productId)?.unit ?? null);
             return (
-            <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_100px_110px_120px_auto] sm:items-center">
+            <div key={i} className="space-y-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_100px_110px_120px_auto] sm:items-center">
               {l.kind === "stock" ? (
-                <ProductPicker products={products} value={l.productId} onChange={(id) => updateLine(i, { productId: id })} />
+                <ProductPicker
+                  products={products}
+                  value={l.productId}
+                  onChange={(id) => {
+                    const colors = products.find((p) => p.id === id)?.colors ?? [];
+                    updateLine(i, { productId: id, colorId: colors.length === 1 ? colors[0].id : "" });
+                  }}
+                />
               ) : (
                 <Input
                   placeholder="Custom item name (not from stock)"
@@ -179,6 +195,13 @@ export function ReturnBuilder({
               >
                 ✕
               </Button>
+            </div>
+              {(() => {
+                const p = products.find((x) => x.id === l.productId);
+                return p && (p.colors?.length ?? 0) > 0 ? (
+                  <LineColorSelect product={p} value={l.colorId} onChange={(colorId) => updateLine(i, { colorId })} />
+                ) : null;
+              })()}
             </div>
             );
           })}

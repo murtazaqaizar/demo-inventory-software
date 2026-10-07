@@ -100,8 +100,8 @@ try {
       console.log("\n1. Create purchase (import, on credit)");
       const p1 = allocateLandedCost(
         [
-          { productId: a.id, qtyMilli: 100000, supplierUnitCostPaisa: 10_000 },
-          { productId: b.id, qtyMilli: 50000, supplierUnitCostPaisa: 20_000 },
+          { productId: a.id, qtyMilli: 100000, colorId: null, supplierUnitCostPaisa: 10_000 },
+          { productId: b.id, qtyMilli: 50000, colorId: null, supplierUnitCostPaisa: 20_000 },
         ],
         100_000 // Rs1,000 freight
       );
@@ -151,7 +151,7 @@ try {
       // --- 2. edit: A down to 60 pcs, B removed, no extras, no longer credit -
       console.log("\n2. Edit purchase (A 100→60, drop B, cash instead of credit)");
       const p2 = allocateLandedCost(
-        [{ productId: a.id, qtyMilli: 60000, supplierUnitCostPaisa: 10_000 }],
+        [{ productId: a.id, qtyMilli: 60000, colorId: null, supplierUnitCostPaisa: 10_000 }],
         0
       );
       await reversePurchaseEffects(tx, purchase);
@@ -184,27 +184,27 @@ try {
       console.log("\n3. Stock-delta map");
       check(
         "delete: the whole quantity comes back out",
-        [...stockDelta([{ productId: a.id, qtyMilli: 60000 }])],
-        [[a.id, -60_000]]
+        [...stockDelta([{ productId: a.id, colorId: null, qtyMilli: 60000 }])],
+        [[`${a.id}|`, -60_000]]
       );
       check(
         "edit: A 100→60 nets −40, dropped B nets −50",
         [...stockDelta(
           [
-            { productId: a.id, qtyMilli: 100000 },
-            { productId: b.id, qtyMilli: 50000 },
+            { productId: a.id, colorId: null, qtyMilli: 100000 },
+            { productId: b.id, colorId: null, qtyMilli: 50000 },
           ],
-          [{ productId: a.id, qtyMilli: 60000 }]
+          [{ productId: a.id, colorId: null, qtyMilli: 60000 }]
         )],
         [
-          [a.id, -40_000],
-          [b.id, -50_000],
+          [`${a.id}|`, -40_000],
+          [`${b.id}|`, -50_000],
         ]
       );
       check(
         "edit: increasing a line nets positive (never blocks)",
-        [...stockDelta([{ productId: a.id, qtyMilli: 60000 }], [{ productId: a.id, qtyMilli: 100000 }])],
-        [[a.id, 40_000]]
+        [...stockDelta([{ productId: a.id, colorId: null, qtyMilli: 60000 }], [{ productId: a.id, colorId: null, qtyMilli: 100000 }])],
+        [[`${a.id}|`, 40_000]]
       );
 
       // --- 4. negative-stock guard -----------------------------------------
@@ -213,12 +213,69 @@ try {
         data: { productId: a.id, type: "SALE_OUT", qtyMilli: -50_000, unitCostPaisa: 10_000 },
       });
       check("stock A after selling 50", await stockOf(tx, a.id), 10);
-      const deleteDelta = stockDelta([{ productId: a.id, qtyMilli: 60000 }]);
+      const deleteDelta = stockDelta([{ productId: a.id, colorId: null, qtyMilli: 60000 }]);
       check("delete blocked, names the product", await findShortProducts(tx, deleteDelta), [
         `${TAG} product A`,
       ]);
       await tx.stockMovement.delete({ where: { id: sale.id } }); // un-sell for step 5
       check("guard allows delete once nothing is sold", await findShortProducts(tx, deleteDelta), []);
+
+      // --- 4c. color variants ---------------------------------------------
+      console.log("\n4c. Stock per color (one pipe, three colors)");
+      const pipe = await tx.product.create({
+        data: {
+          code: `${TAG}-P`,
+          name: `${TAG} pipe`,
+          colors: { create: [{ colorId: "color_black" }, { colorId: "color_blue" }, { colorId: "color_white" }] },
+        },
+      });
+      const pp = allocateLandedCost(
+        [
+          { productId: pipe.id, qtyMilli: 300_000, colorId: "color_black", supplierUnitCostPaisa: 5_000 },
+          { productId: pipe.id, qtyMilli: 200_000, colorId: "color_white", supplierUnitCostPaisa: 5_000 },
+          { productId: pipe.id, qtyMilli: 150_000, colorId: "color_blue", supplierUnitCostPaisa: 5_000 },
+        ],
+        0
+      );
+      const pipePurchase = await tx.purchase.create({ data: { supplierId: supplier.id } });
+      await applyPurchaseEffects(tx, pipePurchase, pp.lines, pp.totalValuePaisa);
+      const byColor = async () =>
+        Object.fromEntries(
+          (
+            await tx.stockMovement.groupBy({ by: ["colorId"], _sum: { qtyMilli: true }, where: { productId: pipe.id } })
+          )
+            .map((g) => [g.colorId, (g._sum.qtyMilli ?? 0) / 1000] as const)
+            .sort((x, y) => String(x[0]).localeCompare(String(y[0])))
+        );
+      check("each color holds its own stock", await byColor(), { color_black: 300, color_blue: 150, color_white: 200 });
+      check("pipe total = 650", await stockOf(tx, pipe.id), 650);
+      // Moving 50 from Black to Blue on an edit nets per color, not to zero.
+      check(
+        "edit Black 300→250, Blue 150→200 nets −50 / +50",
+        [...stockDelta(
+          [
+            { productId: pipe.id, colorId: "color_black", qtyMilli: 300_000 },
+            { productId: pipe.id, colorId: "color_blue", qtyMilli: 150_000 },
+          ],
+          [
+            { productId: pipe.id, colorId: "color_black", qtyMilli: 250_000 },
+            { productId: pipe.id, colorId: "color_blue", qtyMilli: 200_000 },
+          ]
+        )],
+        [[`${pipe.id}|color_black`, -50_000], [`${pipe.id}|color_blue`, 50_000]]
+      );
+      // Sell 140 Blue: deleting the purchase must be blocked for Blue only (10 left < 150).
+      await tx.stockMovement.create({
+        data: { productId: pipe.id, colorId: "color_blue", type: "SALE_OUT", qtyMilli: -140_000 },
+      });
+      check(
+        "guard names the short color",
+        await findShortProducts(tx, stockDelta(pp.lines)),
+        [`${TAG} pipe (Blue)`]
+      );
+      await tx.stockMovement.deleteMany({ where: { productId: pipe.id } });
+      await tx.purchaseItem.deleteMany({ where: { purchaseId: pipePurchase.id } });
+      await tx.purchase.delete({ where: { id: pipePurchase.id } });
 
       // --- 4b. decimal meters ----------------------------------------------
       console.log("\n4b. Decimal quantity in meters");
@@ -227,7 +284,7 @@ try {
         data: { code: `${TAG}-C`, name: `${TAG} product C`, categoryId: wire.id },
       });
       // 250.5 m @ Rs12.34/m = Rs3,091.17 (250.5 × 1,234 = 309,117 paisa exactly)
-      const p3 = allocateLandedCost([{ productId: c.id, qtyMilli: 250_500, supplierUnitCostPaisa: 1_234 }], 25_050);
+      const p3 = allocateLandedCost([{ productId: c.id, qtyMilli: 250_500, colorId: null, supplierUnitCostPaisa: 1_234 }], 25_050);
       const meterPurchase = await tx.purchase.create({ data: { supplierId: supplier.id, freightPaisa: 25_050 } });
       await applyPurchaseEffects(tx, meterPurchase, p3.lines, p3.totalValuePaisa);
       await recomputeLatestCosts(tx, [c.id]);
@@ -272,7 +329,7 @@ try {
           )
         );
         const alloc = allocateLandedCost(
-          prods.map((p) => ({ productId: p.id, qtyMilli: 10000, supplierUnitCostPaisa: 5_000 })),
+          prods.map((p) => ({ productId: p.id, qtyMilli: 10000, colorId: null, supplierUnitCostPaisa: 5_000 })),
           50_000
         );
         const pur = await tx.purchase.create({

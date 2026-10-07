@@ -6,7 +6,8 @@ import { Button, Input, Select } from "@/components/ui";
 import { qtyStep, unitShort, type Unit } from "@/lib/qty";
 
 // One control for the three hand-entered stock movements (feature 6, 18 + adjust).
-export function StockAdjuster({ productId, unit }: { productId: string; unit: Unit }) {
+// colorId: which color variant the movement is for (products with colors only).
+export function StockAdjuster({ productId, colorId, unit }: { productId: string; colorId?: string; unit: Unit }) {
   const [state, formAction, pending] = useActionState(
     async (_prev: ActionResult, fd: FormData) => recordMovement(fd),
     { ok: false }
@@ -15,6 +16,7 @@ export function StockAdjuster({ productId, unit }: { productId: string; unit: Un
   return (
     <form action={formAction} className="flex items-center gap-1">
       <input type="hidden" name="productId" value={productId} />
+      {colorId && <input type="hidden" name="colorId" value={colorId} />}
       <Select name="kind" defaultValue="RETURN_IN" className="w-28" aria-label="Movement type">
         <option value="RETURN_IN">Return in</option>
         <option value="SAMPLE_OUT">Sample out</option>

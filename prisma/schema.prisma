@@ -60,10 +60,6 @@ model Product {
   name            String
   size            String? // e.g. 4-inch (feature 1)
   variant         String? // brand/thickness etc. (feature 1)
-  // Optional, picked from the shop's color list. A different color with its own
-  // stock is a separate product.
-  colorId         String?
-  color           Color?   @relation(fields: [colorId], references: [id])
   // The category decides the unit stock is counted and sold in. No category = sold by the piece.
   categoryId      String?
   category        Category? @relation(fields: [categoryId], references: [id])
@@ -81,9 +77,21 @@ model Product {
   purchaseItems   PurchaseItem[]
   lastPrices      CustomerProductPrice[]
   creditNoteItems CreditNoteItem[]
+  // Color variants (client B, 2026-10-07): one product, stock tracked per color.
+  // A product with colors must name one on every stock line; one without never does.
+  colors          ProductColor[]
 
   @@index([name])
   @@index([categoryId])
+}
+
+model ProductColor {
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  colorId   String
+  color     Color   @relation(fields: [colorId], references: [id])
+
+  @@id([productId, colorId])
   @@index([colorId])
 }
 
@@ -111,7 +119,11 @@ model Color {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  products Product[]
+  variants        ProductColor[]
+  movements       StockMovement[]
+  purchaseItems   PurchaseItem[]
+  invoiceItems    InvoiceItem[]
+  creditNoteItems CreditNoteItem[]
 }
 
 model Category {
@@ -144,6 +156,8 @@ model StockMovement {
   type          MovementType
   // signed delta in thousandths of the product's unit: positive = into stock, negative = out
   qtyMilli      Int
+  colorId       String? // which color variant, when the product has colors
+  color         Color?  @relation(fields: [colorId], references: [id])
   // cost per one unit captured at movement time (paisa) — keeps profit honest on samples/returns
   unitCostPaisa Int          @default(0)
   reason        String?
@@ -157,6 +171,7 @@ model StockMovement {
   createdAt     DateTime     @default(now())
 
   @@index([productId])
+  @@index([productId, colorId])
   @@index([type])
 }
 
@@ -211,6 +226,8 @@ model PurchaseItem {
   productId             String
   product               Product  @relation(fields: [productId], references: [id])
   qtyMilli              Int // quantity received, in thousandths of the product's unit
+  colorId               String? // which color variant, when the product has colors
+  color                 Color?  @relation(fields: [colorId], references: [id])
   supplierUnitCostPaisa Int // supplier price per one unit before landed extras
   landedUnitCostPaisa   Int // final cost per one unit incl. allocated extras (feature 8)
 
@@ -348,6 +365,8 @@ model InvoiceItem {
   product       Product? @relation(fields: [productId], references: [id])
   description   String? // custom line's item name (null for stock lines — use product.name)
   unit          String   @default("pcs") // unit's short label at sale time, for printing
+  colorId       String? // which color variant, when the product has colors
+  color         Color?  @relation(fields: [colorId], references: [id])
   qtyMilli      Int // thousandths of the unit
   ratePaisa     Int // negotiated rate per one unit (feature 13)
   // cost per one unit captured at sale time for latest-cost profit (feature 9, 28).
@@ -399,6 +418,8 @@ model CreditNoteItem {
   product       Product?   @relation(fields: [productId], references: [id])
   description   String?
   unit          String     @default("pcs") // unit's short label at return time
+  colorId       String? // which color variant, when the product has colors
+  color         Color?  @relation(fields: [colorId], references: [id])
   qtyMilli      Int // thousandths of the unit
   ratePaisa     Int // credited per unit
   unitCostPaisa Int        @default(0) // cost restored to stock

@@ -8,8 +8,9 @@ import { TX_OPTIONS } from "@/lib/tx";
 import { requireUserApi, requireOwnerApi } from "@/lib/guards";
 import { rupeesToPaisa, formatPKR } from "@/lib/money";
 import { dateFromInput } from "@/lib/dates";
-import { getStockMap } from "@/lib/stock";
-import { PRODUCT_UNIT, unitsById } from "@/lib/products";
+import { getColorStockMap } from "@/lib/stock";
+import { PRODUCT_INCLUDE, unitsById } from "@/lib/products";
+import { colorsOf, lineColorError, stockKey } from "@/lib/variants";
 import { PIECE, lineAmount, qtyError, toMilli, unitOf } from "@/lib/qty";
 import { getCustomerBalance } from "@/lib/receivables";
 import { audit } from "@/lib/audit";
@@ -48,7 +49,14 @@ export type InvoiceResult =
     };
 
 // Quantities on the stock check are thousandths of the product's unit.
-export type ShortStock = { name: string; unit: string; available: number; requested: number };
+export type ShortStock = {
+  productId: string;
+  colorId: string | null;
+  name: string;
+  unit: string;
+  available: number;
+  requested: number;
+};
 
 // A line is either a stock line (productId set) or a CUSTOM line: free text for
 // goods bought from outside for this customer (productId blank, description set).
@@ -57,6 +65,7 @@ const itemSchema = z.object({
   productId: z.string().optional(),
   description: z.string().trim().max(120).optional(),
   unitId: z.string().optional(), // custom lines only (a Unit id); stock lines use the product's
+  colorId: z.string().optional(), // required when the product has colors (one of them)
   qty: z.coerce.number().positive("Quantity must be more than zero"),
   rateRs: z.coerce.number().min(0).default(0),
   costRs: z.coerce.number().min(0).optional(), // custom lines only: what it cost you
@@ -108,7 +117,7 @@ async function buildLines(
 ): Promise<{ lines: BuiltLine[] } | { error: string }> {
   const ids = items.map((i) => i.productId).filter((id): id is string => Boolean(id));
   const [products, customUnits] = await Promise.all([
-    prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_UNIT }),
+    prisma.product.findMany({ where: { id: { in: ids } }, include: PRODUCT_INCLUDE }),
     unitsById(items.map((i) => i.unitId).filter((id): id is string => Boolean(id))),
   ]);
   const byId = new Map(products.map((p) => [p.id, p]));
@@ -123,15 +132,21 @@ async function buildLines(
       const unit = unitOf(product);
       const e = qtyError(qtyMilli, unit);
       if (e) return { error: `${product.name}: ${e}` };
+      const colors = colorsOf(product);
+      const colorId = it.colorId || null;
+      const ce = lineColorError(product.name, colors.map((c) => c.id), colorId);
+      if (ce) return { error: ce };
+      const colorName = colors.find((c) => c.id === colorId)?.name;
       lines.push({
         productId: product.id,
         description: null,
         unit: unit.short,
         qtyMilli,
+        colorId,
         ratePaisa,
         unitCostPaisa: product.latestCostPaisa,
         isSample: it.isSample,
-        name: product.name,
+        name: colorName ? `${product.name} (${colorName})` : product.name,
       });
     } else {
       if (!it.description) return { error: "A custom item needs a name." };
@@ -143,6 +158,7 @@ async function buildLines(
         description: it.description,
         unit: unit.short,
         qtyMilli,
+        colorId: null,
         ratePaisa,
         unitCostPaisa: it.costRs ? rupeesToPaisa(it.costRs) : 0,
         isSample: it.isSample,
@@ -160,20 +176,24 @@ const billTotal = (lines: { qtyMilli: number; ratePaisa: number; isSample: boole
 const belowCostNames = (lines: BuiltLine[]) =>
   lines.filter((l) => !l.isSample && l.unitCostPaisa > 0 && l.ratePaisa < l.unitCostPaisa).map((l) => l.name);
 
-// Stock lines asking for more than is on the shelf. `returning` = quantity the old
-// version of an edited bill is about to put back.
+// Stock lines asking for more than is on the shelf, per color variant. `returning`
+// = quantity the old version of an edited bill is about to put back (stockKey).
 async function findShortStock(lines: BuiltLine[], returning = new Map<string, number>()): Promise<ShortStock[]> {
-  const needed = new Map<string, { name: string; unit: string; total: number }>();
+  const needed = new Map<string, { productId: string; colorId: string | null; name: string; unit: string; total: number }>();
+  const productIds = new Set<string>();
   for (const l of lines) {
     if (!l.productId) continue;
-    const prev = needed.get(l.productId);
-    needed.set(l.productId, { name: l.name, unit: l.unit, total: (prev?.total ?? 0) + l.qtyMilli });
+    productIds.add(l.productId);
+    const k = stockKey(l.productId, l.colorId);
+    const prev = needed.get(k);
+    needed.set(k, { productId: l.productId, colorId: l.colorId, name: l.name, unit: l.unit, total: (prev?.total ?? 0) + l.qtyMilli });
   }
-  const stock = await getStockMap([...needed.keys()]);
+  const stock = await getColorStockMap([...productIds]);
   const short: ShortStock[] = [];
-  for (const [productId, l] of needed) {
-    const available = (stock.get(productId) ?? 0) + (returning.get(productId) ?? 0);
-    if (l.total > available) short.push({ name: l.name, unit: l.unit, available, requested: l.total });
+  for (const [key, l] of needed) {
+    const available = (stock.get(key) ?? 0) + (returning.get(key) ?? 0);
+    if (l.total > available)
+      short.push({ productId: l.productId, colorId: l.colorId, name: l.name, unit: l.unit, available, requested: l.total });
   }
   return short;
 }
@@ -184,6 +204,7 @@ const itemRows = (lines: BuiltLine[]) =>
     description: l.description,
     unit: l.unit,
     qtyMilli: l.qtyMilli,
+    colorId: l.colorId,
     ratePaisa: l.ratePaisa,
     unitCostPaisa: l.unitCostPaisa,
     isSample: l.isSample,
@@ -323,7 +344,9 @@ export async function editInvoice(input: unknown): Promise<InvoiceResult> {
     if (!d.confirmShortStock) {
       const returning = new Map<string, number>();
       for (const it of old.items) {
-        if (it.productId) returning.set(it.productId, (returning.get(it.productId) ?? 0) + it.qtyMilli);
+        if (!it.productId) continue;
+        const k = stockKey(it.productId, it.colorId);
+        returning.set(k, (returning.get(k) ?? 0) + it.qtyMilli);
       }
       const shortStock = await findShortStock(lines, returning);
       if (shortStock.length > 0) return { ok: false, shortStock };

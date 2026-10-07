@@ -2,9 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireOwnerPage } from "@/lib/guards";
-import { getStockMap } from "@/lib/stock";
+import { toPickerProducts } from "@/lib/picker";
 import { PRODUCT_INCLUDE } from "@/lib/products";
-import { fromMilli, unitOf } from "@/lib/qty";
+import { fromMilli } from "@/lib/qty";
 import { Button, Panel, PageHeader } from "@/components/ui";
 import { PurchaseBuilder } from "../../new/purchase-builder";
 import { DeletePurchase } from "../../delete-purchase";
@@ -39,7 +39,6 @@ export default async function EditPurchasePage({
       orderBy: { name: "asc" },
     }),
   ]);
-  const stock = await getStockMap(products.map((p) => p.id));
 
   return (
     <div>
@@ -53,18 +52,7 @@ export default async function EditPurchasePage({
         }
       />
       <PurchaseBuilder
-        products={products.map((p) => ({
-          id: p.id,
-          code: p.code,
-          name: p.name,
-          size: p.size,
-          variant: p.variant,
-          color: p.color?.name,
-          colorHex: p.color?.hex,
-          stock: stock.get(p.id) ?? 0,
-          unit: unitOf(p),
-          latestCostPaisa: p.latestCostPaisa,
-        }))}
+        products={await toPickerProducts(products, { withCost: true })}
         suppliers={suppliers.map((s) => ({ id: s.id, name: s.name }))}
         initial={{
           id: purchase.id,
@@ -78,6 +66,7 @@ export default async function EditPurchasePage({
           notes: purchase.notes ?? "",
           lines: purchase.items.map((it) => ({
             productId: it.productId,
+            colorId: it.colorId ?? "",
             qty: String(fromMilli(it.qtyMilli)),
             unitCostRs: String(it.supplierUnitCostPaisa / 100),
           })),

@@ -19,7 +19,7 @@ export default async function CategoriesPage() {
     }),
     prisma.color.findMany({
       orderBy: { name: "asc" },
-      select: { id: true, name: true, hex: true, _count: { select: { products: true } } },
+      select: { id: true, name: true, hex: true, _count: { select: { variants: true } } },
     }),
     // Categories whose unit is locked: at least one product with stock history.
     prisma.product.findMany({
@@ -71,7 +71,7 @@ export default async function CategoriesPage() {
         <PanelHeader title={`Colors (${colors.length})`} />
         <AddColorForm />
         {colors.map(({ _count, ...c }) => (
-          <ColorRow key={c.id} color={c} productCount={_count.products} owner={owner} />
+          <ColorRow key={c.id} color={c} productCount={_count.variants} owner={owner} />
         ))}
       </Panel>
 

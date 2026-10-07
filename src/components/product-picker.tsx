@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { inputClass } from "@/components/ui";
 import { formatQtyUnit, type Unit } from "@/lib/qty";
 import { Swatch } from "@/components/color-select";
+import type { ColorRef } from "@/lib/variants";
 
 export type PickerProduct = {
   id: string;
@@ -11,8 +12,8 @@ export type PickerProduct = {
   name: string;
   size?: string | null;
   variant?: string | null;
-  color?: string | null; // tells apart e.g. red and black wire of the same size
-  colorHex?: string | null;
+  colors?: ColorRef[]; // color variants; a line for this product must pick one
+  colorStock?: Record<string, number>; // colorId -> thousandths in stock
   stock?: number; // thousandths of `unit`
   unit?: Unit;
 };
@@ -43,7 +44,7 @@ export function ProductPicker({
     const words = q.split(/\s+/);
     return products
       .filter((p) => {
-        const hay = `${p.code} ${p.name} ${p.size ?? ""} ${p.variant ?? ""} ${p.color ?? ""}`.toLowerCase();
+        const hay = `${p.code} ${p.name} ${p.size ?? ""} ${p.variant ?? ""} ${(p.colors ?? []).map((c) => c.name).join(" ")}`.toLowerCase();
         return words.every((w) => hay.includes(w));
       })
       .slice(0, 50);
@@ -83,7 +84,7 @@ export function ProductPicker({
   }
 
   const label = (p: PickerProduct) =>
-    `${p.name}${p.size ? " " + p.size : ""}${p.variant ? " · " + p.variant : ""}${p.color ? " · " + p.color : ""}`;
+    `${p.name}${p.size ? " " + p.size : ""}${p.variant ? " · " + p.variant : ""}`;
 
   return (
     <div className="relative" ref={boxRef}>
@@ -134,8 +135,10 @@ export function ProductPicker({
             >
               <span className="min-w-0">
                 <span className="flex items-center gap-1.5 truncate font-medium">
-                  {p.colorHex && <Swatch hex={p.colorHex} size={10} />}
                   {p.name}
+                  {(p.colors ?? []).map((c) => (
+                    <Swatch key={c.id} hex={c.hex} size={10} />
+                  ))}
                 </span>
                 <span
                   className={`block truncate font-mono text-[13px] ${
@@ -145,7 +148,6 @@ export function ProductPicker({
                   {p.code}
                   {p.size ? ` · ${p.size}` : ""}
                   {p.variant ? ` · ${p.variant}` : ""}
-                  {p.color ? ` · ${p.color}` : ""}
                 </span>
               </span>
               {typeof p.stock === "number" && (

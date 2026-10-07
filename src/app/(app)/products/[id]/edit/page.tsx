@@ -15,7 +15,7 @@ export default async function EditProductPage({
   const { id } = await params;
 
   const [product, categories, colors] = await Promise.all([
-    prisma.product.findUnique({ where: { id } }),
+    prisma.product.findUnique({ where: { id }, include: { colors: { select: { colorId: true } } } }),
     listCategories(),
     listColors(),
   ]);
@@ -33,7 +33,7 @@ export default async function EditProductPage({
           name: product.name,
           size: product.size,
           variant: product.variant,
-          colorId: product.colorId,
+          colorIds: product.colors.map((c) => c.colorId),
           categoryId: product.categoryId,
           minStock: fromMilli(product.minStockMilli),
           latestCostRs: product.latestCostPaisa / 100,

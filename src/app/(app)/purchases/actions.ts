@@ -16,7 +16,8 @@ import {
   stockDelta,
 } from "@/lib/purchasing";
 import { audit } from "@/lib/audit";
-import { PRODUCT_UNIT } from "@/lib/products";
+import { PRODUCT_INCLUDE } from "@/lib/products";
+import { colorsOf, lineColorError } from "@/lib/variants";
 import { qtyError, toMilli, unitOf } from "@/lib/qty";
 
 // `purchaseId` is returned on create so the form can send you straight to the
@@ -31,6 +32,7 @@ export type ActionResult = {
 const itemSchema = z.object({
   productId: z.string().min(1),
   qty: z.coerce.number().positive("Quantity must be more than zero"), // in the product's unit
+  colorId: z.string().optional(), // required when the product has colors (one of them)
   unitCostRs: z.coerce.number().min(0),
 });
 
@@ -60,18 +62,20 @@ function computeLines(d: z.infer<typeof purchaseSchema>) {
     d.items.map((it) => ({
       productId: it.productId,
       qtyMilli: toMilli(it.qty),
+      colorId: it.colorId || null,
       supplierUnitCostPaisa: rupeesToPaisa(it.unitCostRs),
     })),
     extrasPaisa
   );
 }
 
-// Each line's quantity must suit its product's unit: whole numbers unless the unit
-// allows decimals (up to 3). Returns an error message naming the product, or null.
-async function lineUnitError(items: { productId: string; qty: number }[]): Promise<string | null> {
+// Each line's quantity must suit its product's unit (whole numbers unless the unit
+// allows decimals, up to 3), and its color must be one of the product's colors (or
+// absent when it has none). Returns an error message naming the product, or null.
+async function lineUnitError(items: { productId: string; qty: number; colorId?: string }[]): Promise<string | null> {
   const products = await prisma.product.findMany({
     where: { id: { in: items.map((i) => i.productId) } },
-    select: { id: true, name: true, ...PRODUCT_UNIT },
+    select: { id: true, name: true, ...PRODUCT_INCLUDE },
   });
   const byId = new Map(products.map((p) => [p.id, p]));
   for (const it of items) {
@@ -79,6 +83,8 @@ async function lineUnitError(items: { productId: string; qty: number }[]): Promi
     if (!p) return "A product on this purchase no longer exists";
     const e = qtyError(toMilli(it.qty), unitOf(p));
     if (e) return `${p.name}: ${e}`;
+    const ce = lineColorError(p.name, colorsOf(p).map((c) => c.id), it.colorId || null);
+    if (ce) return ce;
   }
   return null;
 }

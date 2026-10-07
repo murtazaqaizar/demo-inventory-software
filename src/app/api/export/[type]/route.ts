@@ -2,7 +2,9 @@ import { prisma } from "@/lib/prisma";
 import { fromMilli, lineAmount, unitOf, unitShort } from "@/lib/qty";
 import { requireOwnerApi, ForbiddenError } from "@/lib/guards";
 import { getAging, sumLines, getCustomerLedgers } from "@/lib/receivables";
-import { getStockMap } from "@/lib/stock";
+import { getColorStockMap, getStockMap } from "@/lib/stock";
+import { COLOR_FIELDS } from "@/lib/products";
+import { colorsOf, stockKey } from "@/lib/variants";
 import { getIncomeStatement, resolvePeriod } from "@/lib/reports";
 
 const rs = (paisa: number) => (paisa / 100).toFixed(2);
@@ -42,28 +44,36 @@ export async function GET(
     case "stock-valuation": {
       const products = await prisma.product.findMany({
         where: { active: true },
-        include: { category: { select: { name: true, unit: true } }, color: { select: { name: true } } },
+        include: { category: { select: { name: true, unit: true } }, colors: { select: { color: { select: COLOR_FIELDS } } } },
         orderBy: { code: "asc" },
       });
-      const stock = await getStockMap(products.map((p) => p.id));
+      const ids = products.map((p) => p.id);
+      const [stock, colorStock] = await Promise.all([getStockMap(ids), getColorStockMap(ids)]);
       rows = [["Code", "Product", "Category", "Color", "Size", "Variant", "In stock", "Unit", "Cost/unit (Rs)", "Stock value (Rs)"]];
       let totalValue = 0;
       for (const p of products) {
-        const qty = stock.get(p.id) ?? 0;
-        const value = lineAmount(qty, p.latestCostPaisa);
-        totalValue += value;
-        rows.push([
-          p.code,
-          p.name,
-          p.category?.name ?? "",
-          p.color?.name ?? "",
-          p.size ?? "",
-          p.variant ?? "",
-          fromMilli(qty),
-          unitShort(unitOf(p)),
-          rs(p.latestCostPaisa),
-          rs(value),
-        ]);
+        // A product with color variants gets one row per color (client B: "how much
+        // pipe do I have in each color"); the rest get a single row.
+        const colors = colorsOf(p);
+        const parts = colors.length
+          ? colors.map((c) => ({ color: c.name, qty: colorStock.get(stockKey(p.id, c.id)) ?? 0 }))
+          : [{ color: "", qty: stock.get(p.id) ?? 0 }];
+        for (const part of parts) {
+          const value = lineAmount(part.qty, p.latestCostPaisa);
+          totalValue += value;
+          rows.push([
+            p.code,
+            p.name,
+            p.category?.name ?? "",
+            part.color,
+            p.size ?? "",
+            p.variant ?? "",
+            fromMilli(part.qty),
+            unitShort(unitOf(p)),
+            rs(p.latestCostPaisa),
+            rs(value),
+          ]);
+        }
       }
       rows.push([]);
       rows.push(["", "", "", "", "", "", "", "", "TOTAL STOCK VALUE", rs(totalValue)]);

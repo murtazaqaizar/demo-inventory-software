@@ -21,6 +21,7 @@ export type SaleLine = {
   description: string | null;
   unit: string; // the unit's short label ("m"), snapshotted for printing
   qtyMilli: number; // thousandths of the unit
+  colorId: string | null; // color variant sold, when the product has colors
   ratePaisa: number; // per one unit
   unitCostPaisa: number; // per one unit
   isSample: boolean;
@@ -69,6 +70,7 @@ export async function writeSaleStock(tx: Tx, invoiceId: string, lines: SaleLine[
       productId: l.productId,
       type: l.isSample ? ("SAMPLE_OUT" as const) : ("SALE_OUT" as const),
       qtyMilli: -l.qtyMilli,
+      colorId: l.colorId,
       unitCostPaisa: l.unitCostPaisa,
       reason: l.isSample ? "Free sample / bonus" : "Sale",
       invoiceId,
@@ -221,7 +223,7 @@ export async function writeVoidRestock(
   tx: Tx,
   invoiceId: string,
   invoiceNumber: number,
-  items: { productId: string | null; qtyMilli: number; unitCostPaisa: number }[]
+  items: { productId: string | null; colorId: string | null; qtyMilli: number; unitCostPaisa: number }[]
 ) {
   // Custom lines were never in stock, so nothing comes back for them.
   const stocked = items.filter((it): it is typeof it & { productId: string } => it.productId !== null);
@@ -231,6 +233,7 @@ export async function writeVoidRestock(
       productId: it.productId,
       type: "ADJUST" as const,
       qtyMilli: it.qtyMilli, // positive = back into stock
+      colorId: it.colorId,
       unitCostPaisa: it.unitCostPaisa,
       reason: `Bill #${invoiceNumber} voided`,
       invoiceId,

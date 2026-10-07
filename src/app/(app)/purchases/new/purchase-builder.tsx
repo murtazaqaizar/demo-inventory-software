@@ -13,6 +13,7 @@ import {
   TotalReadout,
 } from "@/components/ui";
 import { ProductPicker, type PickerProduct } from "@/components/product-picker";
+import { LineColorSelect } from "@/components/line-color";
 import { formatPKR } from "@/lib/money";
 import { lineAmount, qtyStep, toMilli } from "@/lib/qty";
 
@@ -21,7 +22,7 @@ import { lineAmount, qtyStep, toMilli } from "@/lib/qty";
 type ProductOpt = PickerProduct & { latestCostPaisa?: number };
 type SupplierOpt = { id: string; name: string };
 // qty is typed in the product's unit (pcs / m / ft); cost is per one unit.
-type Line = { productId: string; qty: string; unitCostRs: string };
+type Line = { productId: string; colorId: string; qty: string; unitCostRs: string };
 
 // Editing an existing purchase: same form, prefilled, saving through updatePurchase.
 export type PurchaseInitial = {
@@ -69,7 +70,7 @@ export function PurchaseBuilder({
   const [transportRs, setTransportRs] = useState(initial?.transportRs ?? "0");
   const [notes, setNotes] = useState(initial?.notes ?? "");
   const [lines, setLines] = useState<Line[]>(
-    initial?.lines?.length ? initial.lines : [{ productId: "", qty: "", unitCostRs: "" }]
+    initial?.lines?.length ? initial.lines : [{ productId: "", colorId: "", qty: "", unitCostRs: "" }]
   );
   const [restored, setRestored] = useState(false);
 
@@ -104,7 +105,7 @@ export function PurchaseBuilder({
       setNotes(d.notes ?? "");
       // Drafts saved before decimal units used `pieces` for the quantity.
       if (d.lines?.length)
-        setLines(d.lines.map((l) => ({ ...l, qty: l.qty ?? (l as { pieces?: string }).pieces ?? "" })));
+        setLines(d.lines.map((l) => ({ ...l, colorId: l.colorId ?? "", qty: l.qty ?? (l as { pieces?: string }).pieces ?? "" })));
       setRestored(true);
       /* eslint-enable react-hooks/set-state-in-effect */
     } catch {
@@ -152,7 +153,7 @@ export function PurchaseBuilder({
     setClearingRs("0");
     setTransportRs("0");
     setNotes("");
-    setLines([{ productId: "", qty: "", unitCostRs: "" }]);
+    setLines([{ productId: "", colorId: "", qty: "", unitCostRs: "" }]);
     setRestored(false);
   }
 
@@ -178,7 +179,7 @@ export function PurchaseBuilder({
     setLines((prev) => prev.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
   }
   function addLine() {
-    setLines((prev) => [...prev, { productId: "", qty: "", unitCostRs: "" }]);
+    setLines((prev) => [...prev, { productId: "", colorId: "", qty: "", unitCostRs: "" }]);
   }
   function removeLine(i: number) {
     setLines((prev) => prev.filter((_, idx) => idx !== i));
@@ -190,11 +191,17 @@ export function PurchaseBuilder({
       .filter((l) => l.productId && Number(l.qty) > 0)
       .map((l) => ({
         productId: l.productId,
+        colorId: l.colorId || undefined,
         qty: Number(l.qty),
         unitCostRs: Number(l.unitCostRs) || 0,
       }));
     if (items.length === 0) {
       setError("Add at least one line with a product and quantity.");
+      return;
+    }
+    const noColor = lines.find((l) => l.productId && !l.colorId && (products.find((p) => p.id === l.productId)?.colors?.length ?? 0) > 0);
+    if (noColor) {
+      setError(`Pick a color for ${products.find((p) => p.id === noColor.productId)?.name}.`);
       return;
     }
     const payload = {
@@ -309,7 +316,8 @@ export function PurchaseBuilder({
             // No unit until a product is picked — neutral labels instead of "pcs".
             const unit = products.find((x) => x.id === l.productId)?.unit ?? null;
             return (
-            <div key={i} className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_120px_140px_auto] sm:items-center">
+            <div key={i} className="space-y-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_120px_140px_auto] sm:items-center">
               <ProductPicker
                 products={products}
                 value={l.productId}
@@ -317,7 +325,7 @@ export function PurchaseBuilder({
                   // Prefill the cost with what this product last cost, so an
                   // unchanged price is one less thing to retype.
                   const p = products.find((x) => x.id === productId);
-                  const patch: Partial<Line> = { productId };
+                  const patch: Partial<Line> = { productId, colorId: p?.colors?.length === 1 ? p.colors[0].id : "" };
                   if (!l.unitCostRs && p?.latestCostPaisa) {
                     patch.unitCostRs = String(p.latestCostPaisa / 100);
                   }
@@ -352,6 +360,13 @@ export function PurchaseBuilder({
               >
                 ✕
               </Button>
+            </div>
+              {(() => {
+                const p = products.find((x) => x.id === l.productId);
+                return p && (p.colors?.length ?? 0) > 0 ? (
+                  <LineColorSelect product={p} value={l.colorId} onChange={(colorId) => updateLine(i, { colorId })} />
+                ) : null;
+              })()}
             </div>
             );
           })}

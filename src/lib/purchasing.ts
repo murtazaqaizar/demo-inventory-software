@@ -8,12 +8,14 @@
 
 import type { Prisma } from "@/generated/prisma/client";
 import { MILLI, lineAmount } from "@/lib/qty";
+import { stockKey } from "@/lib/variants";
 
 type Tx = Prisma.TransactionClient;
 
 export type PurchaseLineInput = {
   productId: string;
   qtyMilli: number; // thousandths of the product unit (src/lib/qty.ts)
+  colorId: string | null; // the color variant received, when the product has colors
   supplierUnitCostPaisa: number; // per one unit
 };
 
@@ -115,6 +117,7 @@ export async function applyPurchaseEffects(
       purchaseId: purchase.id,
       productId: c.productId,
       qtyMilli: c.qtyMilli,
+      colorId: c.colorId,
       supplierUnitCostPaisa: c.supplierUnitCostPaisa,
       landedUnitCostPaisa: c.landedUnitCostPaisa,
     })),
@@ -127,6 +130,7 @@ export async function applyPurchaseEffects(
       productId: c.productId,
       type: "PURCHASE_IN" as const,
       qtyMilli: c.qtyMilli,
+      colorId: c.colorId,
       unitCostPaisa: c.landedUnitCostPaisa,
       reason: "Purchase received",
       purchaseId: purchase.id,
@@ -147,20 +151,28 @@ export async function applyPurchaseEffects(
   }
 }
 
-// Net stock change per product (thousandths) when a purchase's lines change: the
-// old quantity comes back out, the new quantity goes in. A product on both sides nets out, which
+// Net stock change per product + color (thousandths) when a purchase's lines change:
+// the old quantity comes back out, the new quantity goes in. A product on both sides nets out, which
 // is why this is a map keyed by product and not a per-line diff. Pure, so the
 // sign convention can be tested directly — it feeds `findShortProducts`, whose
 // answer decides whether an edit or delete is allowed at all.
 //
 // Deleting a purchase is the same calculation with no new lines.
 export function stockDelta(
-  oldItems: { productId: string; qtyMilli: number }[],
-  newLines: { productId: string; qtyMilli: number }[] = []
+  oldItems: { productId: string; colorId: string | null; qtyMilli: number }[],
+  newLines: { productId: string; colorId: string | null; qtyMilli: number }[] = []
 ): Map<string, number> {
+  // Keyed per color variant (stockKey), so moving 50 m from Black to Blue nets
+  // −50 Black / +50 Blue instead of zero.
   const delta = new Map<string, number>();
-  for (const it of oldItems) delta.set(it.productId, (delta.get(it.productId) ?? 0) - it.qtyMilli);
-  for (const l of newLines) delta.set(l.productId, (delta.get(l.productId) ?? 0) + l.qtyMilli);
+  for (const it of oldItems) {
+    const k = stockKey(it.productId, it.colorId);
+    delta.set(k, (delta.get(k) ?? 0) - it.qtyMilli);
+  }
+  for (const l of newLines) {
+    const k = stockKey(l.productId, l.colorId);
+    delta.set(k, (delta.get(k) ?? 0) + l.qtyMilli);
+  }
   return delta;
 }
 
@@ -171,24 +183,31 @@ export async function findShortProducts(
   tx: Tx,
   deltaByProduct: Map<string, number>
 ): Promise<string[]> {
-  const ids = [...deltaByProduct.keys()];
+  // Keys are stockKey(productId, colorId).
+  const ids = [...new Set([...deltaByProduct.keys()].map((k) => k.split("|")[0]))];
   if (ids.length === 0) return [];
 
-  const [grouped, products] = await Promise.all([
+  const [grouped, products, colors] = await Promise.all([
     tx.stockMovement.groupBy({
-      by: ["productId"],
+      by: ["productId", "colorId"],
       _sum: { qtyMilli: true },
       where: { productId: { in: ids } },
     }),
     tx.product.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }),
+    tx.color.findMany({ select: { id: true, name: true } }),
   ]);
 
-  const stock = new Map(grouped.map((g) => [g.productId, g._sum.qtyMilli ?? 0]));
+  const stock = new Map(grouped.map((g) => [stockKey(g.productId, g.colorId), g._sum.qtyMilli ?? 0]));
   const names = new Map(products.map((p) => [p.id, p.name]));
+  const colorNames = new Map(colors.map((c) => [c.id, c.name]));
 
   const short: string[] = [];
-  for (const [productId, delta] of deltaByProduct) {
-    if ((stock.get(productId) ?? 0) + delta < 0) short.push(names.get(productId) ?? productId);
+  for (const [key, delta] of deltaByProduct) {
+    if ((stock.get(key) ?? 0) + delta < 0) {
+      const [productId, colorId] = key.split("|");
+      const name = names.get(productId) ?? productId;
+      short.push(colorId ? `${name} (${colorNames.get(colorId) ?? "color"})` : name);
+    }
   }
   return short;
 }

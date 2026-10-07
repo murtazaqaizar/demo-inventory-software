@@ -62,6 +62,7 @@ type Tx = Prisma.TransactionClient;
 // Quantities are thousandths of the unit: 10_000 = 10 pieces.
 const line = (productId: string | null, over: Partial<Record<string, unknown>> = {}) => ({
   productId,
+  colorId: null as string | null,
   description: null as string | null,
   unit: "pcs",
   qtyMilli: 10_000,
@@ -130,6 +131,27 @@ try {
         "a custom line is never remembered as a last price",
         await tx.customerProductPrice.count({ where: { customerId: customer.id } }),
         0
+      );
+
+      // --- 1c. color variant --------------------------------------------------
+      console.log("\n1c. Selling one color of a multi-color product");
+      const pipe = await tx.product.create({
+        data: { code: `${TAG}-P`, name: `${TAG} pipe`, colors: { create: [{ colorId: "color_black" }, { colorId: "color_blue" }] } },
+      });
+      const invP = await tx.invoice.create({ data: { customerId: customer.id } });
+      await writeSaleStock(tx, invP.id, [line(pipe.id, { colorId: "color_blue", qtyMilli: 20_000 })]);
+      check(
+        "20 Blue leaves stock, tagged Blue",
+        (await movementsFor(tx, invP.id)).map((m) => [m.colorId, m.qtyMilli]),
+        [["color_blue", -20_000]]
+      );
+      await writeVoidRestock(tx, invP.id, invP.number, [
+        { productId: pipe.id, colorId: "color_blue", qtyMilli: 20_000, unitCostPaisa: 0 },
+      ]);
+      check(
+        "voiding puts it back into Blue",
+        (await movementsFor(tx, invP.id)).filter((m) => m.type === "ADJUST").map((m) => [m.colorId, m.qtyMilli]),
+        [["color_blue", 20_000]]
       );
 
       // --- 2. last-price memory --------------------------------------------
@@ -240,8 +262,8 @@ try {
       );
 
       await writeVoidRestock(tx, inv2.id, inv2.number, [
-        { productId: p1.id, qtyMilli: 10_000, unitCostPaisa: 10_000 },
-        { productId: null, qtyMilli: 2_000, unitCostPaisa: 80_000 }, // custom line: nothing to restock
+        { productId: p1.id, colorId: null, qtyMilli: 10_000, unitCostPaisa: 10_000 },
+        { productId: null, colorId: null, qtyMilli: 2_000, unitCostPaisa: 80_000 }, // custom line: nothing to restock
       ]);
       check(
         "voided stock comes back in, positive",

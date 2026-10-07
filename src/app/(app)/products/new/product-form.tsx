@@ -1,12 +1,12 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { startTransition, useActionState, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createProduct, updateProduct, type ActionResult } from "../actions";
 import { Button, FieldError, Input, Label, Panel, Select, numInputClass } from "@/components/ui";
 import { PIECE, qtyStep, unitShort, type Unit } from "@/lib/qty";
-import { ColorSelect, type ColorOption } from "@/components/color-select";
+import { Swatch, type ColorOption } from "@/components/color-select";
 
 export type CategoryOption = { id: string; name: string; unit: Unit };
 
@@ -15,7 +15,7 @@ export type ProductInitial = {
   name: string;
   size: string | null;
   variant: string | null;
-  colorId: string | null;
+  colorIds: string[]; // color variants this product comes in
   categoryId: string | null;
   minStock: number; // in the product's unit (not thousandths)
   latestCostRs: number;
@@ -41,6 +41,11 @@ export function ProductForm({
   const [categoryId, setCategoryId] = useState(initial?.categoryId ?? "");
   const unit: Unit = categories.find((c) => c.id === categoryId)?.unit ?? PIECE;
   const per = unit.name.toLowerCase();
+  // Color variants: each ticked color gets its own stock (client B, 2026-10-07).
+  const [colorIds, setColorIds] = useState<string[]>(initial?.colorIds ?? []);
+  const picked = colors.filter((c) => colorIds.includes(c.id));
+  const toggleColor = (id: string) =>
+    setColorIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const short = unitShort(unit);
 
   useEffect(() => {
@@ -49,23 +54,31 @@ export function ProductForm({
 
   return (
     <Panel pad className="max-w-2xl">
-      <form action={formAction} className="space-y-5">
+      {/* Submitted by hand rather than via <form action>: React resets a form after an
+          action runs, which wiped everything typed whenever the save was refused
+          (e.g. a duplicate). This keeps the entries on screen to fix and retry. */}
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          const fd = new FormData(e.currentTarget);
+          startTransition(() => formAction(fd));
+        }}
+        className="space-y-5"
+      >
         {editing && <input type="hidden" name="productId" value={initial!.id} />}
-        <div>
-          <Label htmlFor="name">Product name</Label>
-          <Input id="name" name="name" required placeholder="Cutting Disc" defaultValue={initial?.name} />
-        </div>
-
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <div>
-            <Label htmlFor="categoryId">Category</Label>
+            <Label htmlFor="categoryId">Product (category)</Label>
             <Select
               id="categoryId"
               name="categoryId"
+              required
               value={categoryId}
               onChange={(e) => setCategoryId(e.target.value)}
             >
-              <option value="">No category (by the piece)</option>
+              <option value="" disabled>
+                Pick a category…
+              </option>
               {categories.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name} — {c.unit.name.toLowerCase()} ({c.unit.short})
@@ -83,11 +96,45 @@ export function ProductForm({
               </Link>
             </p>
           </div>
-          <div>
-            <Label htmlFor="color">Color (optional)</Label>
-            <ColorSelect id="color" colors={colors} defaultValue={initial?.colorId ?? ""} />
-          </div>
         </div>
+
+        <fieldset>
+          <legend className="mb-1.5 block text-[13px] font-medium text-ink-muted">
+            Colors (optional) — tick every color this item comes in
+          </legend>
+          <div className="flex flex-wrap gap-2">
+            {colors.map((c) => {
+              const on = colorIds.includes(c.id);
+              return (
+                <label
+                  key={c.id}
+                  className={`inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-full border px-3 text-[13px] font-medium transition-colors duration-150 ${
+                    on ? "border-accent bg-accent-soft text-ink" : "border-line bg-surface text-ink-muted hover:bg-surface-alt"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    name="colorIds"
+                    value={c.id}
+                    checked={on}
+                    onChange={() => toggleColor(c.id)}
+                    className="sr-only"
+                  />
+                  <Swatch hex={c.hex} size={12} />
+                  {c.name}
+                </label>
+              );
+            })}
+          </div>
+          <p className="mt-1.5 text-[13px] text-ink-muted">
+            {picked.length
+              ? "Stock is kept separately for each color. Bills and purchases will ask which color."
+              : "No colors: stock is one count, and bills never ask for a color."}{" "}
+            <Link href="/categories" className="underline-offset-2 hover:underline">
+              Manage colors
+            </Link>
+          </p>
+        </fieldset>
 
         <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
           <div>
@@ -118,16 +165,43 @@ export function ProductForm({
         {!editing ? (
           <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
             <div>
-              <Label htmlFor="initialStock">Opening stock ({short})</Label>
-              <Input
-                id="initialStock"
-                name="initialStock"
-                type="number"
-                min={0}
-                step={qtyStep(unit)}
-                defaultValue={0}
-                className={numInputClass}
-              />
+              {picked.length === 0 ? (
+                <>
+                  <Label htmlFor="initialStock">Opening stock ({short})</Label>
+                  <Input
+                    id="initialStock"
+                    name="initialStock"
+                    type="number"
+                    min={0}
+                    step={qtyStep(unit)}
+                    defaultValue={0}
+                    className={numInputClass}
+                  />
+                </>
+              ) : (
+                <fieldset className="space-y-2">
+                  <legend className="mb-1.5 block text-[13px] font-medium text-ink-muted">
+                    Opening stock per color ({short})
+                  </legend>
+                  {picked.map((c) => (
+                    <div key={c.id} className="flex items-center gap-2">
+                      <label htmlFor={`opening_${c.id}`} className="flex w-28 items-center gap-1.5 text-[15px] text-ink">
+                        <Swatch hex={c.hex} size={12} />
+                        {c.name}
+                      </label>
+                      <Input
+                        id={`opening_${c.id}`}
+                        name={`opening_${c.id}`}
+                        type="number"
+                        min={0}
+                        step={qtyStep(unit)}
+                        defaultValue={0}
+                        className={numInputClass}
+                      />
+                    </div>
+                  ))}
+                </fieldset>
+              )}
               {unit.decimals && (
                 <p className="mt-1.5 text-[13px] text-ink-muted">
                   Total length, e.g. 200 rolls × 80 m = 16000.
