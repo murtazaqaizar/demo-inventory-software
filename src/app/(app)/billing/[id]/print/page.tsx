@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { formatPKR } from "@/lib/money";
 import { formatQtyUnit } from "@/lib/qty";
-import { lineTotal, sumLines } from "@/lib/receivables";
+import { getLaterPaidByInvoice, lineTotal, sumLines } from "@/lib/receivables";
 import { getBusinessSettings } from "@/lib/settings";
 import { contactLine, dateFieldOf, drawsTextHeader } from "@/lib/letterhead";
 import { PrintSheet } from "@/components/print-sheet";
@@ -29,7 +29,13 @@ export default async function InvoicePrintPage({
   const total = sumLines(invoice.items);
 
   const paid = invoice.payments.reduce((s, p) => s + p.amountPaisa, 0);
-  const owing = total - paid;
+  // Paid on the customer's account after the bill was made, applied oldest bill
+  // first. A voided bill is not a charge, so nothing is applied to it.
+  const paidLater =
+    invoice.status === "ACTIVE"
+      ? ((await getLaterPaidByInvoice([invoice.customerId])).get(invoice.id) ?? 0)
+      : 0;
+  const owing = total - paid - paidLater;
 
   const waText = `Assalam-o-Alaikum ${invoice.customer.name}, here is your invoice #${invoice.number} from ${settings.name} for ${formatPKR(total)}${
     owing > 0 ? ` (balance ${formatPKR(owing)})` : ""
@@ -156,8 +162,20 @@ export default async function InvoicePrintPage({
             </div>
             {paid > 0 && (
               <div className="flex justify-between text-ink-muted">
-                <span>Paid</span>
+                <span>{paidLater > 0 ? "Paid at billing" : "Paid"}</span>
                 <span>{formatPKR(paid)}</span>
+              </div>
+            )}
+            {paidLater > 0 && (
+              <div className="flex justify-between text-ink-muted">
+                <span>Paid later</span>
+                <span>{formatPKR(paidLater)}</span>
+              </div>
+            )}
+            {owing <= 0 && paidLater > 0 && (
+              <div className="flex justify-between font-semibold text-ink">
+                <span>Balance</span>
+                <span>Fully paid</span>
               </div>
             )}
             {owing > 0 && (

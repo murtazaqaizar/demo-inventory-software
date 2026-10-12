@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/guards";
 import { getLowStock } from "@/lib/stock";
 import { getAging } from "@/lib/receivables";
 import { getSalesTotals, } from "@/lib/reports";
-import { sumLines } from "@/lib/receivables";
+import { getLaterPaidByInvoice, sumLines } from "@/lib/receivables";
 import { getAccountBalances } from "@/lib/money-accounts";
 import { formatPKR } from "@/lib/money";
 import {
@@ -82,10 +82,13 @@ export default async function DashboardPage() {
   const overdue = aging.reduce((s, a) => s + a.d30 + a.d60 + a.d90, 0);
   const topDebtors = aging.slice(0, 5);
 
+  // Money paid on the customer's account after billing, applied oldest bill first.
+  const laterPaid = await getLaterPaidByInvoice(recentBills.map((i) => i.customerId));
+
   // Group the working list by day, same treatment as the Billing page.
   const rows = recentBills.map((inv) => {
     const totalPaisa = sumLines(inv.items);
-    const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0);
+    const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0) + (laterPaid.get(inv.id) ?? 0);
     const voided = inv.status === "VOIDED";
     return {
       inv,

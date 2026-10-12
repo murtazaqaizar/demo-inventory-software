@@ -174,6 +174,89 @@ export async function getTotalReceivable(): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------
+// Later payments against bills (client C, 2026-10-13)
+//
+// Money taken after the bill — a lump-sum Payment on the customer's account, or a
+// return credited to the account — is not tied to any one bill. Without this, a
+// bill paid off later still showed its old "owing" amount even though the
+// customer's balance was settled. The credit is applied the same way aging does
+// it: opening balance first, then the oldest unpaid bills.
+//
+// Returns invoiceId → paisa settled after billing. Only bills that received some
+// later credit appear in the map.
+// ---------------------------------------------------------------------------
+
+type OpenBillRow = { id: string; customerId: string; outstanding: number | string };
+
+export async function getLaterPaidByInvoice(customerIds?: string[]): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (customerIds && customerIds.length === 0) return result;
+  const ids = customerIds ? [...new Set(customerIds)] : undefined;
+
+  const scopeInvoice = ids ? Prisma.sql`AND i."customerId" IN (${Prisma.join(ids)})` : Prisma.empty;
+  const scopeCreditNote = ids ? Prisma.sql`AND n."customerId" IN (${Prisma.join(ids)})` : Prisma.empty;
+
+  const [customers, openBills, payments, creditNotes] = await Promise.all([
+    prisma.customer.findMany({
+      where: ids ? { id: { in: ids } } : {},
+      select: { id: true, openingBalancePaisa: true },
+    }),
+    prisma.$queryRaw<OpenBillRow[]>`
+      SELECT x."id", x."customerId", x."outstanding"
+      FROM (
+        SELECT i."id", i."customerId", i."date", i."number",
+               COALESCE(t."total", 0) - COALESCE(p."paid", 0) AS "outstanding"
+        FROM "Invoice" i
+        LEFT JOIN (
+          SELECT it."invoiceId",
+                 SUM(CASE WHEN it."isSample" THEN 0 ELSE ROUND(it."qtyMilli"::numeric * it."ratePaisa" / 1000) END) AS "total"
+          FROM "InvoiceItem" it
+          GROUP BY it."invoiceId"
+        ) t ON t."invoiceId" = i."id"
+        LEFT JOIN (
+          SELECT ip."invoiceId", SUM(ip."amountPaisa") AS "paid"
+          FROM "InvoicePayment" ip
+          GROUP BY ip."invoiceId"
+        ) p ON p."invoiceId" = i."id"
+        WHERE i."status" = 'ACTIVE' ${scopeInvoice}
+      ) x
+      WHERE x."outstanding" > 0
+      ORDER BY x."date" ASC, x."number" ASC
+    `,
+    prisma.payment.groupBy({
+      by: ["customerId"],
+      where: ids ? { customerId: { in: ids } } : {},
+      _sum: { amountPaisa: true },
+    }),
+    prisma.$queryRaw<{ customerId: string; credited: number | string }[]>`
+      SELECT n."customerId", SUM(ROUND(ci."qtyMilli"::numeric * ci."ratePaisa" / 1000)) AS "credited"
+      FROM "CreditNote" n
+      JOIN "CreditNoteItem" ci ON ci."creditNoteId" = n."id"
+      WHERE n."refundMethod" = 'CREDIT_TO_ACCOUNT' ${scopeCreditNote}
+      GROUP BY n."customerId"
+    `,
+  ]);
+
+  const credit = new Map<string, number>();
+  for (const p of payments) credit.set(p.customerId, p._sum.amountPaisa ?? 0);
+  for (const cn of creditNotes) credit.set(cn.customerId, (credit.get(cn.customerId) ?? 0) + num(cn.credited));
+  // Opening balance is the oldest debt — settle it first.
+  for (const c of customers) {
+    const left = credit.get(c.id) ?? 0;
+    credit.set(c.id, Math.max(0, left - Math.max(0, c.openingBalancePaisa)));
+  }
+
+  for (const bill of openBills) {
+    const left = credit.get(bill.customerId) ?? 0;
+    if (left <= 0) continue;
+    const use = Math.min(left, num(bill.outstanding));
+    result.set(bill.id, use);
+    credit.set(bill.customerId, left - use);
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Aging (improvement 7)
 //
 // Payments are lump sums, so for reporting we allocate unallocated credit against

@@ -2,7 +2,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
 import { formatPKR } from "@/lib/money";
-import { sumLines } from "@/lib/receivables";
+import { getLaterPaidByInvoice, sumLines } from "@/lib/receivables";
 import {
   Badge,
   Button,
@@ -77,11 +77,13 @@ export default async function BillingPage({
   ]);
 
   const owner = user.role === "OWNER";
+  // Money paid on the customer's account after billing, applied oldest bill first.
+  const laterPaid = await getLaterPaidByInvoice(invoices.map((i) => i.customerId));
 
   // Decorate once so the group aggregates and the rows agree.
   const rows = invoices.map((inv) => {
     const totalPaisa = sumLines(inv.items);
-    const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0);
+    const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0) + (laterPaid.get(inv.id) ?? 0);
     const voided = inv.status === "VOIDED";
     return {
       inv,

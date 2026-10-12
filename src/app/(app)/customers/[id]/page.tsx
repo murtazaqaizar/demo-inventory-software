@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { sumLines } from "@/lib/receivables";
+import { getLaterPaidByInvoice, sumLines } from "@/lib/receivables";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
@@ -111,16 +111,19 @@ export default async function CustomerStatementPage({
       : "All transactions";
 
   // Per-bill breakdown (client request): every bill with what's paid and what's still owing.
+  // "Paid" includes account payments made after the bill, applied oldest bill first.
+  const laterPaid = await getLaterPaidByInvoice([customer.id]);
   const bills = invoices
     .map((inv) => {
       const total = sumLines(inv.items);
-      const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0);
-      return { id: inv.id, number: inv.number, date: inv.date, total, paid, owing: total - paid };
+      const atBilling = inv.payments.reduce((s, p) => s + p.amountPaisa, 0);
+      const paid = atBilling + (laterPaid.get(inv.id) ?? 0);
+      return { id: inv.id, number: inv.number, date: inv.date, total, atBilling, paid, owing: total - paid };
     })
     .sort((a, b) => b.date.getTime() - a.date.getTime());
 
   const totalBilled = bills.reduce((s, b) => s + b.total, 0);
-  const paidAtBilling = bills.reduce((s, b) => s + b.paid, 0);
+  const paidAtBilling = bills.reduce((s, b) => s + b.atBilling, 0);
   const lumpTotal = payments.reduce((s, p) => s + p.amountPaisa, 0);
   const returnsTotal = creditNotes.reduce(
     (s, cn) => s + sumLines(cn.items),

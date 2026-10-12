@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { fromMilli, lineAmount, unitOf, unitShort } from "@/lib/qty";
 import { requireOwnerApi, ForbiddenError } from "@/lib/guards";
-import { getAging, sumLines, getCustomerLedgers } from "@/lib/receivables";
+import { getAging, sumLines, getCustomerLedgers, getLaterPaidByInvoice } from "@/lib/receivables";
 import { getColorStockMap, getStockMap } from "@/lib/stock";
 import { COLOR_FIELDS } from "@/lib/products";
 import { colorsOf, stockKey } from "@/lib/variants";
@@ -113,10 +113,11 @@ export async function GET(
         orderBy: { date: "desc" },
         include: { customer: true, items: true, payments: true },
       });
+      const laterPaid = await getLaterPaidByInvoice();
       rows = [["Bill #", "Date", "Customer", "Status", "Total (Rs)", "Paid (Rs)", "Owing (Rs)"]];
       for (const i of invoices) {
         const total = sumLines(i.items);
-        const paid = i.payments.reduce((s, p) => s + p.amountPaisa, 0);
+        const paid = i.payments.reduce((s, p) => s + p.amountPaisa, 0) + (laterPaid.get(i.id) ?? 0);
         rows.push([
           i.number, i.date.toISOString().slice(0, 10), i.customer.name, i.status,
           rs(total), rs(paid), rs(i.status === "VOIDED" ? 0 : total - paid),
