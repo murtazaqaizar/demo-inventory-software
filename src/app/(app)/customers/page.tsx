@@ -61,7 +61,7 @@ export default async function CustomersPage({
   return (
     <div>
       <PageHeader
-        title="Customers (Udhaar)"
+        title="Customer Credit"
         description="Running balance per customer. Record lump-sum payments and open statements."
         action={
           (hiddenCount > 0 || showHidden) && (

@@ -22,7 +22,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/categories", label: "Categories & colors", section: "Stock", ownerOnly: false },
   { href: "/purchases", label: "Purchases", section: "Stock", ownerOnly: true },
   { href: "/aging", label: "Who owes me", section: "Money", ownerOnly: true },
-  { href: "/customers", label: "Customers (Udhaar)", section: "Money", ownerOnly: false },
+  { href: "/customers", label: "Customer Credit", section: "Money", ownerOnly: false },
   { href: "/suppliers", label: "Suppliers (Payables)", section: "Money", ownerOnly: true },
   { href: "/cheques", label: "Cheques", section: "Money", ownerOnly: true },
   { href: "/cash-bank", label: "Cash & Bank", section: "Money", ownerOnly: true },
