@@ -17,6 +17,7 @@ export type NavItem = {
 export const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Dashboard", section: "Sell", ownerOnly: false },
   { href: "/billing", label: "Billing", section: "Sell", ownerOnly: false },
+  { href: "/quotations", label: "Quotations", section: "Sell", ownerOnly: false },
   { href: "/returns", label: "Returns", section: "Sell", ownerOnly: false },
   { href: "/products", label: "Products / Stock", section: "Stock", ownerOnly: false },
   { href: "/categories", label: "Categories & colors", section: "Stock", ownerOnly: false },

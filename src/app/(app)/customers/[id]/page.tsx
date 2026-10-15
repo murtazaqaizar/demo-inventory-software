@@ -2,6 +2,7 @@ import Link from "next/link";
 import { getLaterPaidByInvoice, sumLines } from "@/lib/receivables";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
+import { docTitle } from "@/lib/doc-title";
 import { requireUser } from "@/lib/guards";
 import { formatPKR } from "@/lib/money";
 import { getBusinessSettings } from "@/lib/settings";
@@ -28,6 +29,12 @@ function endOfDay(d: Date) {
   const x = new Date(d);
   x.setHours(23, 59, 59, 999);
   return x;
+}
+
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const c = await prisma.customer.findUnique({ where: { id }, select: { name: true } });
+  return docTitle("Statement", "", c);
 }
 
 export default async function CustomerStatementPage({

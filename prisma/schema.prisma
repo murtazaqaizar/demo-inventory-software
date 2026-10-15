@@ -74,6 +74,7 @@ model Product {
 
   movements       StockMovement[]
   invoiceItems    InvoiceItem[]
+  quotationItems  QuotationItem[]
   purchaseItems   PurchaseItem[]
   lastPrices      CustomerProductPrice[]
   creditNoteItems CreditNoteItem[]
@@ -124,6 +125,7 @@ model Color {
   purchaseItems   PurchaseItem[]
   invoiceItems    InvoiceItem[]
   creditNoteItems CreditNoteItem[]
+  quotationItems  QuotationItem[]
 }
 
 model Category {
@@ -278,6 +280,7 @@ model Customer {
   payments    Payment[]
   lastPrices  CustomerProductPrice[]
   creditNotes CreditNote[]
+  quotations  Quotation[]
 
   @@index([name])
 }
@@ -332,6 +335,7 @@ model Invoice {
   movements   StockMovement[]
   payments    InvoicePayment[]
   creditNotes CreditNote[]
+  quotation   Quotation? // set when this bill was made from an accepted quotation
 
   @@index([customerId])
   @@index([date])
@@ -599,4 +603,58 @@ model ExpenseHead {
   // same delete-or-hide rule Products, Customers and Suppliers follow.
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Quotations (client C, 2026-10-15)
+// ---------------------------------------------------------------------------
+// A price offer the customer can accept or turn down. It touches nothing:
+// no stock moves, no money, no customer balance. Accepting one makes a normal
+// bill from it (Invoice.quotation links the two) and only then does stock go
+// out. Numbered in its own series (Q-1, Q-2...) so bill numbers stay unbroken.
+
+enum QuotationStatus {
+  OPEN
+  ACCEPTED // turned into a bill — see invoiceId
+  REJECTED
+}
+
+model Quotation {
+  id          String          @id @default(cuid())
+  number      Int             @unique @default(autoincrement())
+  customerId  String
+  customer    Customer        @relation(fields: [customerId], references: [id])
+  date        DateTime        @default(now())
+  status      QuotationStatus @default(OPEN)
+  notes       String?
+  createdById String?
+  invoiceId   String?         @unique
+  invoice     Invoice?        @relation(fields: [invoiceId], references: [id])
+  closedAt    DateTime? // when it was accepted or rejected
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  items QuotationItem[]
+
+  @@index([customerId])
+  @@index([status, date])
+}
+
+// Same shape as InvoiceItem, so a quotation line becomes a bill line unchanged.
+model QuotationItem {
+  id            String    @id @default(cuid())
+  quotationId   String
+  quotation     Quotation @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  productId     String?
+  product       Product?  @relation(fields: [productId], references: [id])
+  description   String?
+  unit          String    @default("pcs")
+  colorId       String?
+  color         Color?    @relation(fields: [colorId], references: [id])
+  qtyMilli      Int
+  ratePaisa     Int
+  unitCostPaisa Int       @default(0)
+  isSample      Boolean   @default(false)
+
+  @@index([quotationId])
 }

@@ -3,6 +3,7 @@
 import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createInvoice, editInvoice, getLastPrice, type ShortStock } from "../actions";
+import { saveQuotation } from "../../quotations/actions";
 import {
   Button,
   Input,
@@ -39,9 +40,9 @@ const emptyLine: Line = { kind: "stock", productId: "", colorId: "", description
 const emptyCustom: Line = { ...emptyLine, kind: "custom" };
 const emptyPay: Pay = { method: "CASH", amountRs: "", chequeNumber: "", chequeBank: "", chequeDate: "" };
 
-export type BillEdit = {
-  invoiceId: string;
-  number: number;
+// What the form starts from: a saved bill or quotation being edited, or a
+// quotation being turned into a bill.
+export type BillSeed = {
   customerId: string;
   date: string; // YYYY-MM-DD
   lines: {
@@ -57,12 +58,18 @@ export type BillEdit = {
   payments: { method: "CASH" | "CHEQUE" | "ONLINE"; amountRs: number }[];
 };
 
+export type BillEdit = BillSeed & { invoiceId: string; number: number };
+
 export function BillingBuilder({
   products,
   customers,
   units,
   today,
   edit,
+  mode = "bill",
+  seed,
+  quote,
+  fromQuote,
 }: {
   products: PickerProduct[];
   customers: CustomerOpt[];
@@ -72,7 +79,14 @@ export function BillingBuilder({
   // browser's during render would differ from the server-rendered HTML.
   today: string;
   edit?: BillEdit;
+  // "quote" saves a quotation: no payment, no stock or credit checks.
+  mode?: "bill" | "quote";
+  seed?: BillSeed;
+  quote?: { quotationId: string; number: number }; // editing this quotation
+  fromQuote?: { quotationId: string; number: number }; // this bill accepts it
 }) {
+  const isQuote = mode === "quote";
+  const init = edit ?? seed;
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -81,14 +95,14 @@ export function BillingBuilder({
   const [creditWarning, setCreditWarning] = useState<string | null>(null);
 
   const [customerId, setCustomerId] = useState(
-    edit?.customerId ?? customers.find((c) => c.isCash)?.id ?? ""
+    init?.customerId ?? customers.find((c) => c.isCash)?.id ?? ""
   );
   // Goods often go out before the bill is written up, so the date is editable
   // rather than fixed to the moment you press save.
-  const [date, setDate] = useState(edit?.date ?? today);
+  const [date, setDate] = useState(init?.date ?? today);
   const [lines, setLines] = useState<Line[]>(
-    edit
-      ? edit.lines.map((l) => ({
+    init
+      ? init.lines.map((l) => ({
           kind: l.productId ? ("stock" as const) : ("custom" as const),
           productId: l.productId ?? "",
           colorId: l.colorId ?? "",
@@ -102,8 +116,8 @@ export function BillingBuilder({
       : [{ ...emptyLine }]
   );
   const [payments, setPayments] = useState<Pay[]>(
-    edit && edit.payments.length > 0
-      ? edit.payments.map((p) => ({ ...emptyPay, method: p.method, amountRs: String(p.amountRs) }))
+    init && init.payments.length > 0
+      ? init.payments.map((p) => ({ ...emptyPay, method: p.method, amountRs: String(p.amountRs) }))
       : [{ ...emptyPay }]
   );
 
@@ -241,6 +255,17 @@ export function BillingBuilder({
         chequeDate: p.chequeDate || undefined,
       }));
 
+    if (isQuote) {
+      startTransition(async () => {
+        const payload = { customerId, date, items, confirmBelowCost: !!ack.belowCost };
+        const res = await saveQuotation(quote ? { ...payload, quotationId: quote.quotationId } : payload);
+        if (res.ok) router.push(`/quotations/${res.quotationId}/print`);
+        else if (res.belowCost) setBelowCost(res.belowCost);
+        else setError(res.error ?? "Could not save the quotation.");
+      });
+      return;
+    }
+
     startTransition(async () => {
       const payload = {
         customerId,
@@ -253,7 +278,7 @@ export function BillingBuilder({
       };
       const res = edit
         ? await editInvoice({ ...payload, invoiceId: edit.invoiceId })
-        : await createInvoice(payload);
+        : await createInvoice(fromQuote ? { ...payload, quotationId: fromQuote.quotationId } : payload);
       if (res.ok) {
         router.push(`/billing/${res.invoiceId}/print`);
       } else if (res.shortStock) {
@@ -291,7 +316,7 @@ export function BillingBuilder({
             </Select>
           </div>
           <div>
-            <Label htmlFor="bill-date">Bill date</Label>
+            <Label htmlFor="bill-date">{isQuote ? "Quotation date" : "Bill date"}</Label>
             <Input
               id="bill-date"
               type="date"
@@ -300,9 +325,11 @@ export function BillingBuilder({
               className="font-mono"
             />
             <p className="mt-1.5 text-[13px] text-ink-muted">
-              {date === today
-                ? "Today. Change it to bill for a day the goods actually went out."
-                : "This bill, and the cash taken on it, will be recorded on this date."}
+              {isQuote
+                ? "A quotation moves no stock and adds nothing to the customer's balance."
+                : date === today
+                  ? "Today. Change it to bill for a day the goods actually went out."
+                  : "This bill, and the cash taken on it, will be recorded on this date."}
             </p>
           </div>
         </div>
@@ -466,12 +493,13 @@ export function BillingBuilder({
         </div>
 
         <div className="mt-4 flex justify-between border-t border-line pt-4 text-base">
-          <span className="font-medium text-ink-muted">Bill total</span>
+          <span className="font-medium text-ink-muted">{isQuote ? "Quotation total" : "Bill total"}</span>
           <span className="font-semibold text-ink">{formatPKR(totalPaisa)}</span>
         </div>
       </Panel>
 
-      {/* Payments — split supported */}
+      {/* Payments — split supported. A quotation takes no money. */}
+      {!isQuote && (
       <Panel pad>
         <div className="mb-1 flex items-center justify-between">
           <h2 className="font-semibold text-ink">Payment</h2>
@@ -544,6 +572,7 @@ export function BillingBuilder({
           </div>
         </div>
       </Panel>
+      )}
 
       {/* Warnings */}
       {shortStock && (
@@ -609,19 +638,31 @@ export function BillingBuilder({
       {!shortStock && !belowCost && !creditWarning && (
         <StickyActionBar>
           <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
-            <TotalReadout label="Bill total" value={formatPKR(totalPaisa)} />
-            <TotalReadout
-              label="On udhaar"
-              value={formatPKR(udhaarPaisa)}
-              tone={udhaarPaisa > 0 ? "warn" : "ink"}
-            />
+            <TotalReadout label={isQuote ? "Quotation total" : "Bill total"} value={formatPKR(totalPaisa)} />
+            {!isQuote && (
+              <TotalReadout
+                label="On udhaar"
+                value={formatPKR(udhaarPaisa)}
+                tone={udhaarPaisa > 0 ? "warn" : "ink"}
+              />
+            )}
           </div>
           <div className="flex gap-2.5">
-            <Button type="button" variant="secondary" onClick={() => router.push("/billing")}>
+            <Button type="button" variant="secondary" onClick={() => router.push(isQuote || fromQuote ? "/quotations" : "/billing")}>
               Cancel
             </Button>
             <Button type="button" onClick={() => submit(acked)} disabled={pending}>
-              {pending ? "Saving…" : edit ? `Update bill #${edit.number}` : "Save & print"}
+              {pending
+                ? "Saving…"
+                : isQuote
+                  ? quote
+                    ? `Update quotation Q-${quote.number}`
+                    : "Save quotation & print"
+                  : edit
+                    ? `Update bill #${edit.number}`
+                    : fromQuote
+                      ? `Make bill from Q-${fromQuote.number}`
+                      : "Save & print"}
             </Button>
           </div>
         </StickyActionBar>

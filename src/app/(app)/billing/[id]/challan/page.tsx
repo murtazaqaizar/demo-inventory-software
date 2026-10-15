@@ -1,11 +1,18 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
+import { docTitle } from "@/lib/doc-title";
 import { requireUser } from "@/lib/guards";
 import { getBusinessSettings } from "@/lib/settings";
 import { formatQtyTotals, formatQtyUnit } from "@/lib/qty";
 import { contactLine, dateFieldOf, drawsTextHeader } from "@/lib/letterhead";
 import { PrintSheet } from "@/components/print-sheet";
 import { PrintButton } from "@/components/print-button";
+
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const inv = await prisma.invoice.findUnique({ where: { id }, select: { number: true, customer: true } });
+  return docTitle("Challan", String(inv?.number ?? ""), inv?.customer);
+}
 
 // Delivery challan / gate pass (spec feature 17): goods leaving the premises, no prices.
 export default async function ChallanPage({

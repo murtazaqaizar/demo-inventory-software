@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
+import { docTitle } from "@/lib/doc-title";
 import { requireUser } from "@/lib/guards";
 import { formatPKR } from "@/lib/money";
 import { formatQtyUnit } from "@/lib/qty";
@@ -9,6 +10,12 @@ import { contactLine, dateFieldOf, drawsTextHeader } from "@/lib/letterhead";
 import { PrintSheet } from "@/components/print-sheet";
 import { PrintButton } from "@/components/print-button";
 import { WhatsAppButton } from "@/components/whatsapp-button";
+
+export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const inv = await prisma.invoice.findUnique({ where: { id }, select: { number: true, customer: true } });
+  return docTitle("Bill", String(inv?.number ?? ""), inv?.customer);
+}
 
 export default async function InvoicePrintPage({
   params,
