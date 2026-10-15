@@ -33,11 +33,15 @@ export default async function QuotationPrintPage({
       customer: true,
       items: { include: { product: true, color: { select: { name: true } } } },
       invoice: { select: { number: true } },
+      payments: true,
     },
   });
   if (!quote) notFound();
 
   const total = sumLines(quote.items);
+  // Terms only — what will be paid on order. The rest is shown as going on udhaar.
+  const payNow = quote.payments.reduce((s, p) => s + p.amountPaisa, 0);
+  const onCredit = total - payNow;
   const waText = `Assalam-o-Alaikum ${quote.customer.name}, here is our quotation Q-${quote.number} from ${settings.name} for ${formatPKR(total)}. JazakAllah.`;
 
   return (
@@ -91,10 +95,24 @@ export default async function QuotationPrintPage({
         </div>
 
         {/* Quotation for */}
-        <div className="mt-4 text-sm">
-          <p className="text-ink-muted">Quotation for</p>
-          <p className="font-medium">{quote.customer.isCashCustomer ? "Walk-in customer" : quote.customer.name}</p>
-          {quote.customer.phone && <p className="text-ink-muted">{quote.customer.phone}</p>}
+        <div className="mt-4 flex justify-between text-sm">
+          <div>
+            <p className="text-ink-muted">Quotation for</p>
+            <p className="font-medium">{quote.customer.isCashCustomer ? "Walk-in customer" : quote.customer.name}</p>
+            {quote.customer.phone && <p className="text-ink-muted">{quote.customer.phone}</p>}
+          </div>
+          <div className="text-right">
+            <p className="text-ink-muted">Payment</p>
+            {quote.payments.length === 0 ? (
+              <p className="font-medium">UDHAAR</p>
+            ) : (
+              quote.payments.map((p) => (
+                <p key={p.id} className="font-medium">
+                  {p.method} {formatPKR(p.amountPaisa)}
+                </p>
+              ))
+            )}
+          </div>
         </div>
 
         {quote.status !== "OPEN" && (
@@ -145,11 +163,23 @@ export default async function QuotationPrintPage({
 
         {/* Total */}
         <div className="mt-4 flex justify-end">
-          <div className="w-64 text-sm">
+          <div className="w-64 space-y-1 text-sm">
             <div className="flex justify-between border-t border-line-strong pt-2 text-base font-semibold">
               <span>Total</span>
               <span>{formatPKR(total)}</span>
             </div>
+            {payNow > 0 && (
+              <div className="flex justify-between text-ink-muted">
+                <span>Payment on order</span>
+                <span>{formatPKR(payNow)}</span>
+              </div>
+            )}
+            {onCredit > 0 && (
+              <div className="flex justify-between font-semibold text-ink">
+                <span>Balance (udhaar)</span>
+                <span>{formatPKR(onCredit)}</span>
+              </div>
+            )}
           </div>
         </div>
 

@@ -55,7 +55,13 @@ export type BillSeed = {
     costRs: number;
     isSample: boolean;
   }[];
-  payments: { method: "CASH" | "CHEQUE" | "ONLINE"; amountRs: number }[];
+  payments: {
+    method: "CASH" | "CHEQUE" | "ONLINE";
+    amountRs: number;
+    chequeNumber?: string;
+    chequeBank?: string;
+    chequeDate?: string;
+  }[];
 };
 
 export type BillEdit = BillSeed & { invoiceId: string; number: number };
@@ -117,7 +123,14 @@ export function BillingBuilder({
   );
   const [payments, setPayments] = useState<Pay[]>(
     init && init.payments.length > 0
-      ? init.payments.map((p) => ({ ...emptyPay, method: p.method, amountRs: String(p.amountRs) }))
+      ? init.payments.map((p) => ({
+          ...emptyPay,
+          method: p.method,
+          amountRs: String(p.amountRs),
+          chequeNumber: p.chequeNumber ?? "",
+          chequeBank: p.chequeBank ?? "",
+          chequeDate: p.chequeDate ?? "",
+        }))
       : [{ ...emptyPay }]
   );
 
@@ -257,7 +270,7 @@ export function BillingBuilder({
 
     if (isQuote) {
       startTransition(async () => {
-        const payload = { customerId, date, items, confirmBelowCost: !!ack.belowCost };
+        const payload = { customerId, date, items, payments: pays, confirmBelowCost: !!ack.belowCost };
         const res = await saveQuotation(quote ? { ...payload, quotationId: quote.quotationId } : payload);
         if (res.ok) router.push(`/quotations/${res.quotationId}/print`);
         else if (res.belowCost) setBelowCost(res.belowCost);
@@ -498,8 +511,8 @@ export function BillingBuilder({
         </div>
       </Panel>
 
-      {/* Payments — split supported. A quotation takes no money. */}
-      {!isQuote && (
+      {/* Payments — split supported. On a quotation these are the terms only:
+          nothing is recorded until it becomes a bill. */}
       <Panel pad>
         <div className="mb-1 flex items-center justify-between">
           <h2 className="font-semibold text-ink">Payment</h2>
@@ -513,8 +526,9 @@ export function BillingBuilder({
           </Button>
         </div>
         <p className="mb-3 text-[13px] text-ink-muted">
-          Enter what the customer pays now. Leave blank (or pay less than the total) and the rest
-          goes on their udhaar account.
+          {isQuote
+            ? "What the customer will pay when they order, and how. The rest is shown as going on udhaar. Nothing is recorded until the quotation becomes a bill."
+            : "Enter what the customer pays now. Leave blank (or pay less than the total) and the rest goes on their udhaar account."}
         </p>
 
         <div className="space-y-3">
@@ -561,7 +575,7 @@ export function BillingBuilder({
 
         <div className="mt-4 space-y-1 border-t border-line pt-4 text-sm">
           <div className="flex justify-between">
-            <span className="text-ink-muted">Paying now</span>
+            <span className="text-ink-muted">{isQuote ? "Pays on order" : "Paying now"}</span>
             <span className="font-medium">{formatPKR(paidPaisa)}</span>
           </div>
           <div className="flex justify-between text-base">
@@ -572,7 +586,6 @@ export function BillingBuilder({
           </div>
         </div>
       </Panel>
-      )}
 
       {/* Warnings */}
       {shortStock && (
@@ -639,13 +652,11 @@ export function BillingBuilder({
         <StickyActionBar>
           <div className="flex flex-wrap items-baseline gap-x-8 gap-y-2">
             <TotalReadout label={isQuote ? "Quotation total" : "Bill total"} value={formatPKR(totalPaisa)} />
-            {!isQuote && (
-              <TotalReadout
-                label="On udhaar"
-                value={formatPKR(udhaarPaisa)}
-                tone={udhaarPaisa > 0 ? "warn" : "ink"}
-              />
-            )}
+            <TotalReadout
+              label="On udhaar"
+              value={formatPKR(udhaarPaisa)}
+              tone={udhaarPaisa > 0 ? "warn" : "ink"}
+            />
           </div>
           <div className="flex gap-2.5">
             <Button type="button" variant="secondary" onClick={() => router.push(isQuote || fromQuote ? "/quotations" : "/billing")}>

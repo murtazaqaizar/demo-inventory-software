@@ -12,7 +12,7 @@ export default async function EditQuotationPage({ params }: { params: Promise<{ 
   await requireUser();
   const { id } = await params;
 
-  const q = await prisma.quotation.findUnique({ where: { id }, include: { items: true } });
+  const q = await prisma.quotation.findUnique({ where: { id }, include: { items: true, payments: true } });
   if (!q) notFound();
   // Only an open quotation can change; an accepted one already has its bill.
   if (q.status !== "OPEN") redirect("/quotations");

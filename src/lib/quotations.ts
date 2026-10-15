@@ -17,6 +17,13 @@ type QuoteForSeed = {
     unitCostPaisa: number;
     isSample: boolean;
   }[];
+  payments: {
+    method: string;
+    amountPaisa: number;
+    chequeNumber: string | null;
+    chequeBank: string | null;
+    chequeDate: string | null;
+  }[];
 };
 
 export function quotationSeed(q: QuoteForSeed, date?: string): BillSeed {
@@ -33,7 +40,13 @@ export function quotationSeed(q: QuoteForSeed, date?: string): BillSeed {
       costRs: it.unitCostPaisa / 100,
       isSample: it.isSample,
     })),
-    payments: [],
+    payments: q.payments.map((p) => ({
+      method: p.method as "CASH" | "CHEQUE" | "ONLINE",
+      amountRs: p.amountPaisa / 100,
+      chequeNumber: p.chequeNumber ?? undefined,
+      chequeBank: p.chequeBank ?? undefined,
+      chequeDate: p.chequeDate ?? undefined,
+    })),
   };
 }
 

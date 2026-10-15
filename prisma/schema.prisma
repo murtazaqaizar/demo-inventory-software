@@ -634,7 +634,8 @@ model Quotation {
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 
-  items QuotationItem[]
+  items    QuotationItem[]
+  payments QuotationPayment[]
 
   @@index([customerId])
   @@index([status, date])
@@ -655,6 +656,24 @@ model QuotationItem {
   ratePaisa     Int
   unitCostPaisa Int       @default(0)
   isSample      Boolean   @default(false)
+
+  @@index([quotationId])
+}
+
+// The payment terms written on a quotation: what the customer will pay when
+// the order is placed, and how. Nothing here is money received — no cash,
+// bank or cheque record exists until the quotation becomes a bill, where these
+// rows pre-fill the bill's payment section. Whatever they don't cover is the
+// part that will go on credit.
+model QuotationPayment {
+  id           String        @id @default(cuid())
+  quotationId  String
+  quotation    Quotation     @relation(fields: [quotationId], references: [id], onDelete: Cascade)
+  method       PaymentMethod
+  amountPaisa  Int
+  chequeNumber String?
+  chequeBank   String?
+  chequeDate   String? // as typed on the form, YYYY-MM-DD
 
   @@index([quotationId])
 }

@@ -15,7 +15,7 @@ export default async function ConvertQuotationPage({ params }: { params: Promise
   await requireUser();
   const { id } = await params;
 
-  const q = await prisma.quotation.findUnique({ where: { id }, include: { items: true } });
+  const q = await prisma.quotation.findUnique({ where: { id }, include: { items: true, payments: true } });
   if (!q) notFound();
   if (q.status === "ACCEPTED" && q.invoiceId) redirect(`/billing/${q.invoiceId}/print`);
   if (q.status !== "OPEN") redirect("/quotations");
