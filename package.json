@@ -26,6 +26,7 @@
     "verify:expenses": "tsx scripts/verify-expenses.mts",
     "verify:void-ledger": "tsx scripts/verify-void-ledger.mts",
     "verify:ledger": "tsx scripts/verify-ledger.mts",
+    "verify:generated": "tsx scripts/verify-generated.mts",
     "demo:seed": "tsx scripts/seed-demo.mts"
   },
   "dependencies": {
