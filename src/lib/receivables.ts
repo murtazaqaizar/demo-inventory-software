@@ -17,6 +17,10 @@ import { num } from "@/lib/sql";
 //
 // Voided invoices are excluded entirely (improvement 2).
 //
+// A payment made by a cheque that BOUNCED was never received, so it is left out
+// of every "paid" sum — the customer owes that money again. Pending and cleared
+// cheques count as paid, as they always have.
+//
 // PERFORMANCE: these sums are done by Postgres, not by pulling the whole sales
 // history into Node. The old version ran `invoice.findMany({ status: ACTIVE })`
 // with every line item and payment included on every dashboard / customer-list
@@ -31,6 +35,22 @@ export function lineTotal(it: { ratePaisa: number; qtyMilli: number; isSample?: 
 export function sumLines(items: { ratePaisa: number; qtyMilli: number; isSample?: boolean }[]) {
   return items.reduce((s, it) => s + lineTotal(it), 0);
 }
+
+// Money received on a bill or as a lump sum, ignoring bounced cheques. Callers
+// that use it must load `cheque: { select: { status: true } }` with the payments.
+export type CountedPayment = { amountPaisa: number; cheque?: { status: string } | null };
+export function isBounced(p: CountedPayment) {
+  return p.cheque?.status === "BOUNCED";
+}
+export function sumPaid(payments: CountedPayment[]) {
+  return payments.reduce((s, p) => s + (isBounced(p) ? 0 : p.amountPaisa), 0);
+}
+// Prisma `include` for payments, so `sumPaid` can see the cheque status.
+export const PAYMENTS_WITH_CHEQUE = { include: { cheque: { select: { status: true, number: true } } } } as const;
+// Prisma `where` for lump-sum Payment rows that really arrived.
+export const PAYMENT_NOT_BOUNCED = {
+  OR: [{ chequeId: null }, { cheque: { status: { not: "BOUNCED" as const } } }],
+};
 
 export type CustomerLedger = {
   customerId: string;
@@ -64,7 +84,7 @@ export async function getCustomerLedgers(
     ? Prisma.sql`AND i."customerId" IN (${Prisma.join(customerIds)})`
     : Prisma.empty;
   const scopePayment = customerIds
-    ? Prisma.sql`WHERE p."customerId" IN (${Prisma.join(customerIds)})`
+    ? Prisma.sql`AND p."customerId" IN (${Prisma.join(customerIds)})`
     : Prisma.empty;
   const scopeCreditNote = customerIds
     ? Prisma.sql`AND n."customerId" IN (${Prisma.join(customerIds)})`
@@ -91,13 +111,15 @@ export async function getCustomerLedgers(
       SELECT i."customerId", SUM(p."amountPaisa") AS "paid"
       FROM "Invoice" i
       JOIN "InvoicePayment" p ON p."invoiceId" = i."id"
-      WHERE i."status" = 'ACTIVE' ${scopeInvoice}
+      LEFT JOIN "Cheque" chq ON chq."id" = p."chequeId"
+      WHERE i."status" = 'ACTIVE' AND chq."status" IS DISTINCT FROM 'BOUNCED' ${scopeInvoice}
       GROUP BY i."customerId"
     ) ip ON ip."customerId" = c."id"
     LEFT JOIN (
       SELECT p."customerId", SUM(p."amountPaisa") AS "paid"
       FROM "Payment" p
-      ${scopePayment}
+      LEFT JOIN "Cheque" chq ON chq."id" = p."chequeId"
+      WHERE chq."status" IS DISTINCT FROM 'BOUNCED' ${scopePayment}
       GROUP BY p."customerId"
     ) pm ON pm."customerId" = c."id"
     LEFT JOIN (
@@ -141,9 +163,13 @@ export async function getCustomerBalance(customerId: string): Promise<number> {
 
 // Total owed across every active credit customer, as one scalar from Postgres —
 // so the customers list doesn't have to load every customer just to print a footer.
+//
+// Only customers who OWE count. A customer in advance (paid more than billed) is
+// money we hold for them, not a negative receivable — netting it off would hide
+// what everyone else still owes.
 export async function getTotalReceivable(): Promise<number> {
   const rows = await prisma.$queryRaw<{ total: number | string | null }[]>`
-    SELECT SUM(
+    SELECT SUM(GREATEST(0,
       c."openingBalancePaisa"
       + COALESCE((
           SELECT SUM(CASE WHEN it."isSample" THEN 0 ELSE ROUND(it."qtyMilli"::numeric * it."ratePaisa" / 1000) END)
@@ -155,10 +181,13 @@ export async function getTotalReceivable(): Promise<number> {
           SELECT SUM(p."amountPaisa")
           FROM "Invoice" i
           JOIN "InvoicePayment" p ON p."invoiceId" = i."id"
-          WHERE i."customerId" = c."id" AND i."status" = 'ACTIVE'
+          LEFT JOIN "Cheque" chq ON chq."id" = p."chequeId"
+          WHERE i."customerId" = c."id" AND i."status" = 'ACTIVE' AND chq."status" IS DISTINCT FROM 'BOUNCED'
         ), 0)
       - COALESCE((
-          SELECT SUM(p."amountPaisa") FROM "Payment" p WHERE p."customerId" = c."id"
+          SELECT SUM(p."amountPaisa") FROM "Payment" p
+          LEFT JOIN "Cheque" chq ON chq."id" = p."chequeId"
+          WHERE p."customerId" = c."id" AND chq."status" IS DISTINCT FROM 'BOUNCED'
         ), 0)
       - COALESCE((
           SELECT SUM(ROUND(ci."qtyMilli"::numeric * ci."ratePaisa" / 1000))
@@ -166,7 +195,7 @@ export async function getTotalReceivable(): Promise<number> {
           JOIN "CreditNoteItem" ci ON ci."creditNoteId" = n."id"
           WHERE n."customerId" = c."id" AND n."refundMethod" = 'CREDIT_TO_ACCOUNT'
         ), 0)
-    ) AS "total"
+    )) AS "total"
     FROM "Customer" c
     WHERE c."isCashCustomer" = false AND c."active" = true
   `;
@@ -216,6 +245,8 @@ export async function getLaterPaidByInvoice(customerIds?: string[]): Promise<Map
         LEFT JOIN (
           SELECT ip."invoiceId", SUM(ip."amountPaisa") AS "paid"
           FROM "InvoicePayment" ip
+          LEFT JOIN "Cheque" chq ON chq."id" = ip."chequeId"
+          WHERE chq."status" IS DISTINCT FROM 'BOUNCED'
           GROUP BY ip."invoiceId"
         ) p ON p."invoiceId" = i."id"
         WHERE i."status" = 'ACTIVE' ${scopeInvoice}
@@ -225,7 +256,7 @@ export async function getLaterPaidByInvoice(customerIds?: string[]): Promise<Map
     `,
     prisma.payment.groupBy({
       by: ["customerId"],
-      where: ids ? { customerId: { in: ids } } : {},
+      where: { ...(ids ? { customerId: { in: ids } } : {}), ...PAYMENT_NOT_BOUNCED },
       _sum: { amountPaisa: true },
     }),
     prisma.$queryRaw<{ customerId: string; credited: number | string }[]>`
@@ -240,10 +271,12 @@ export async function getLaterPaidByInvoice(customerIds?: string[]): Promise<Map
   const credit = new Map<string, number>();
   for (const p of payments) credit.set(p.customerId, p._sum.amountPaisa ?? 0);
   for (const cn of creditNotes) credit.set(cn.customerId, (credit.get(cn.customerId) ?? 0) + num(cn.credited));
-  // Opening balance is the oldest debt — settle it first.
+  // Opening balance is the oldest debt — settle it first. A NEGATIVE opening is
+  // an advance the customer had with us on day one, so it adds to their credit
+  // (the same way aging treats it below).
   for (const c of customers) {
     const left = credit.get(c.id) ?? 0;
-    credit.set(c.id, Math.max(0, left - Math.max(0, c.openingBalancePaisa)));
+    credit.set(c.id, Math.max(0, left - c.openingBalancePaisa));
   }
 
   for (const bill of openBills) {
@@ -315,6 +348,8 @@ export async function getAging(asOf: Date = new Date()): Promise<CustomerAging[]
         LEFT JOIN (
           SELECT ip."invoiceId", SUM(ip."amountPaisa") AS "paid"
           FROM "InvoicePayment" ip
+          LEFT JOIN "Cheque" chq ON chq."id" = ip."chequeId"
+          WHERE chq."status" IS DISTINCT FROM 'BOUNCED'
           GROUP BY ip."invoiceId"
         ) p ON p."invoiceId" = i."id"
         WHERE i."status" = 'ACTIVE'
@@ -322,7 +357,7 @@ export async function getAging(asOf: Date = new Date()): Promise<CustomerAging[]
       WHERE x."outstanding" > 0
       ORDER BY x."date" ASC
     `,
-    prisma.payment.groupBy({ by: ["customerId"], _sum: { amountPaisa: true } }),
+    prisma.payment.groupBy({ by: ["customerId"], where: PAYMENT_NOT_BOUNCED, _sum: { amountPaisa: true } }),
     prisma.$queryRaw<{ customerId: string; credited: number | string }[]>`
       SELECT n."customerId", SUM(ROUND(ci."qtyMilli"::numeric * ci."ratePaisa" / 1000)) AS "credited"
       FROM "CreditNote" n

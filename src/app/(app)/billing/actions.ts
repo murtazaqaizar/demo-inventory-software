@@ -14,11 +14,12 @@ import { belowCostNames, billTotal, buildLines, itemRows, itemSchema, type Built
 import { getCustomerBalance } from "@/lib/receivables";
 import { audit } from "@/lib/audit";
 import {
+  editBlocker,
   reverseInvoiceMoney,
+  voidInvoiceTx,
   writeInvoicePayments,
   writeLastPrices,
   writeSaleStock,
-  writeVoidRestock,
   type PaymentInput,
 } from "@/lib/billing-effects";
 
@@ -260,6 +261,8 @@ export async function editInvoice(input: unknown): Promise<InvoiceResult> {
     });
     if (!old) return { ok: false, error: "Bill not found" };
     if (old.status === "VOIDED") return { ok: false, error: "A voided bill cannot be edited" };
+    const blocked = await editBlocker(prisma, old.id);
+    if (blocked) return { ok: false, error: blocked };
 
     const built = await buildLines(d.items);
     if ("error" in built) return { ok: false, error: built.error };
@@ -384,41 +387,26 @@ export async function voidInvoice(formData: FormData): Promise<{ ok: boolean; er
     if (!parsed.success) return { ok: false, error: parsed.error.issues[0]?.message };
     const { invoiceId, reason } = parsed.data;
 
-    const invoice = await prisma.invoice.findUnique({
-      where: { id: invoiceId },
-      include: { items: true, payments: true, customer: true },
-    });
-    if (!invoice) return { ok: false, error: "Bill not found" };
-    if (invoice.status === "VOIDED") return { ok: false, error: "Already voided" };
-
-    await prisma.$transaction(async (tx) => {
-      // Put the stock back with reversing movements (history stays traceable).
-      await writeVoidRestock(tx, invoice.id, invoice.number, invoice.items);
-
-      // Reverse money that was actually received. A cheque is marked BOUNCED
-      // rather than deleted — the register should still show it existed.
-      await reverseInvoiceMoney(tx, invoice.payments, {
-        note: `Bill #${invoice.number} voided`,
-        chequeAction: "bounce",
-      });
-
-      await tx.invoice.update({
-        where: { id: invoiceId },
-        data: { status: "VOIDED", voidedAt: new Date(), voidedById: user.id, voidReason: reason },
-      });
-    }, TX_OPTIONS);
+    // Stock back, money reversed (dated to the bill's day), cheques handled, the
+    // source quotation re-opened — or refused, writing nothing (see voidInvoiceTx).
+    const result = await prisma.$transaction(
+      (tx) => voidInvoiceTx(tx, invoiceId, { userId: user.id, reason }),
+      TX_OPTIONS
+    );
+    if (!result.ok) return { ok: false, error: result.error };
 
     await audit(
       { id: user.id, username: user.username },
       "INVOICE_VOID",
       "Invoice",
       invoiceId,
-      `Voided bill #${invoice.number} (${invoice.customer.name}) — ${reason}`
+      `Voided bill #${result.number} (${result.customerName}) — ${reason}`
     );
 
     revalidatePath("/billing");
     revalidatePath("/products");
     revalidatePath("/customers");
+    revalidatePath("/quotations");
     return { ok: true };
 }, (error) => ({ ok: false, error }));
 }

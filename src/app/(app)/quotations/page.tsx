@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
+import { dayEnd, dayStart } from "@/lib/dates";
 import { formatPKR } from "@/lib/money";
 import { sumLines } from "@/lib/receivables";
 import {
@@ -43,12 +44,8 @@ export default async function QuotationsPage({
   }
   if (sp.from || sp.to) {
     where.date = {};
-    if (sp.from) where.date.gte = new Date(sp.from);
-    if (sp.to) {
-      const end = new Date(sp.to);
-      end.setHours(23, 59, 59, 999);
-      where.date.lte = end;
-    }
+    if (sp.from) where.date.gte = dayStart(sp.from);
+    if (sp.to) where.date.lte = dayEnd(sp.to);
   }
 
   const [quotes, total] = await Promise.all([

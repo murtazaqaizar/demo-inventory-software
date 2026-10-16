@@ -11,6 +11,7 @@ import { PRODUCT_INCLUDE, unitsById } from "@/lib/products";
 import { colorsOf, lineColorError } from "@/lib/variants";
 import { PIECE, lineAmount, qtyError, toMilli, unitOf } from "@/lib/qty";
 import { audit } from "@/lib/audit";
+import { returnBillError } from "@/lib/returns";
 
 export type ReturnResult =
   | { ok: true; creditNoteId: string; number: number }
@@ -55,6 +56,8 @@ export async function createReturn(input: unknown): Promise<ReturnResult> {
 
     const customer = await prisma.customer.findUnique({ where: { id: d.customerId } });
     if (!customer) return { ok: false, error: "Customer not found." };
+    const billError = await returnBillError(prisma, d.customerId, d.invoiceId);
+    if (billError) return { ok: false, error: billError };
 
     type Line = {
       productId: string | null;

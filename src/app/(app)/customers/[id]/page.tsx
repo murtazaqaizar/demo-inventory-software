@@ -1,10 +1,11 @@
 import Link from "next/link";
-import { getLaterPaidByInvoice, sumLines } from "@/lib/receivables";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { docTitle } from "@/lib/doc-title";
 import { requireUser } from "@/lib/guards";
 import { formatPKR } from "@/lib/money";
+import { buildStatement } from "@/lib/statement";
+import { ReversePayment } from "../customer-forms";
 import { getBusinessSettings } from "@/lib/settings";
 import { drawsTextHeader } from "@/lib/letterhead";
 import { daysSince } from "@/lib/dates";
@@ -23,14 +24,6 @@ import {
 import { PrintButton } from "@/components/print-button";
 import { WhatsAppButton } from "@/components/whatsapp-button";
 
-type Row = { date: Date; kind: string; debit: number; credit: number };
-
-function endOfDay(d: Date) {
-  const x = new Date(d);
-  x.setHours(23, 59, 59, 999);
-  return x;
-}
-
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const c = await prisma.customer.findUnique({ where: { id }, select: { name: true } });
@@ -44,102 +37,27 @@ export default async function CustomerStatementPage({
   params: Promise<{ id: string }>;
   searchParams: Promise<{ from?: string; to?: string }>;
 }) {
-  await requireUser();
+  const user = await requireUser();
+  const owner = user.role === "OWNER";
   const { id } = await params;
   const { from, to } = await searchParams;
 
   const settings = await getBusinessSettings();
 
-  const customer = await prisma.customer.findUnique({ where: { id } });
-  if (!customer) notFound();
-
-  const [invoices, payments, creditNotes] = await Promise.all([
-    // Every active bill is a charge; money taken at billing time shows as a credit.
-    prisma.invoice.findMany({
-      where: { customerId: id, status: "ACTIVE" },
-      include: { items: true, payments: true },
-      orderBy: { date: "asc" },
-    }),
-    prisma.payment.findMany({ where: { customerId: id }, orderBy: { date: "asc" } }),
-    prisma.creditNote.findMany({
-      where: { customerId: id, refundMethod: "CREDIT_TO_ACCOUNT" },
-      include: { items: true },
-      orderBy: { date: "asc" },
-    }),
-  ]);
-
-  const allRows: Row[] = [
-    ...invoices.map((inv) => ({
-      date: inv.date,
-      kind: `Bill #${inv.number}`,
-      debit: sumLines(inv.items),
-      credit: inv.payments.reduce((s, p) => s + p.amountPaisa, 0),
-    })),
-    ...payments.map((p) => ({
-      date: p.date,
-      kind: `Payment (${p.method})`,
-      debit: 0,
-      credit: p.amountPaisa,
-    })),
-    ...creditNotes.map((cn) => ({
-      date: cn.date,
-      kind: `Return #${cn.number}`,
-      debit: 0,
-      credit: sumLines(cn.items),
-    })),
-  ].sort((a, b) => a.date.getTime() - b.date.getTime());
-
-  const fromDate = from ? new Date(from) : null;
-  const toDate = to ? endOfDay(new Date(to)) : null;
-
-  // Opening balance for the chosen period = starting balance + everything before `from`.
-  let opening = customer.openingBalancePaisa;
-  const inPeriod: Row[] = [];
-  for (const r of allRows) {
-    if (fromDate && r.date < fromDate) {
-      opening += r.debit - r.credit;
-      continue;
-    }
-    if (toDate && r.date > toDate) continue;
-    inPeriod.push(r);
-  }
-
-  let running = opening;
-  const withBalance = inPeriod.map((r) => {
-    running += r.debit - r.credit;
-    return { ...r, balance: running };
-  });
+  const statement = await buildStatement(id, { from, to });
+  if (!statement) notFound();
+  const { customer, opening, rows: withBalance, closing: running, bills, fromDate, toDate } = statement;
+  const { totalBilled, returnsTotal, totalReceived, outstanding } = statement.totals;
 
   const periodLabel =
     fromDate || toDate
       ? `${fromDate ? fromDate.toLocaleDateString("en-PK") : "start"} – ${
-          to ? new Date(to).toLocaleDateString("en-PK") : "today"
+          toDate ? toDate.toLocaleDateString("en-PK") : "today"
         }`
       : "All transactions";
 
-  // Per-bill breakdown (client request): every bill with what's paid and what's still owing.
-  // "Paid" includes account payments made after the bill, applied oldest bill first.
-  const laterPaid = await getLaterPaidByInvoice([customer.id]);
-  const bills = invoices
-    .map((inv) => {
-      const total = sumLines(inv.items);
-      const atBilling = inv.payments.reduce((s, p) => s + p.amountPaisa, 0);
-      const paid = atBilling + (laterPaid.get(inv.id) ?? 0);
-      return { id: inv.id, number: inv.number, date: inv.date, total, atBilling, paid, owing: total - paid };
-    })
-    .sort((a, b) => b.date.getTime() - a.date.getTime());
-
-  const totalBilled = bills.reduce((s, b) => s + b.total, 0);
-  const paidAtBilling = bills.reduce((s, b) => s + b.atBilling, 0);
-  const lumpTotal = payments.reduce((s, p) => s + p.amountPaisa, 0);
-  const returnsTotal = creditNotes.reduce(
-    (s, cn) => s + sumLines(cn.items),
-    0
-  );
   const oldestOwing = bills.filter((b) => b.owing > 0).at(-1);
   const oldestOwingDays = oldestOwing ? daysSince(oldestOwing.date) : null;
-  const totalReceived = paidAtBilling + lumpTotal;
-  const outstanding = customer.openingBalancePaisa + totalBilled - totalReceived - returnsTotal;
 
   return (
     <div>
@@ -259,9 +177,27 @@ export default async function CustomerStatementPage({
               <td className="h-11 py-2.5 text-right font-mono">{formatPKR(opening)}</td>
             </tr>
             {withBalance.map((r, i) => (
-              <tr key={i} className="border-b border-line">
+              <tr key={i} className={`border-b border-line ${r.voided ? "text-ink-muted" : ""}`}>
                 <td className="h-11 py-2.5 text-ink-muted" data-label="Date">{r.date.toLocaleDateString("en-PK")}</td>
-                <td className="h-11 py-2.5" data-label="Detail">{r.kind}</td>
+                <td className="h-11 py-2.5" data-label="Detail">
+                  {r.billId ? (
+                    <Link href={`/billing/${r.billId}/print`} className={`underline hover:text-ink ${r.voided ? "line-through" : ""}`}>
+                      {r.kind}
+                    </Link>
+                  ) : (
+                    r.kind
+                  )}
+                  {r.note && (
+                    <span className={`ml-2 text-xs ${r.voided || r.note.includes("bounced") ? "text-bad" : "text-ink-muted"}`}>
+                      {r.note}
+                    </span>
+                  )}
+                  {owner && r.paymentId && (
+                    <span className="ml-2">
+                      <ReversePayment paymentId={r.paymentId} label={`${r.kind} of ${formatPKR(r.credit)}`} />
+                    </span>
+                  )}
+                </td>
                 <td className="h-11 py-2.5 text-right font-mono" data-label="Bill">{r.debit ? formatPKR(r.debit) : "—"}</td>
                 <td className="h-11 py-2.5 text-right font-mono" data-label="Paid">{r.credit ? formatPKR(r.credit) : "—"}</td>
                 <td className="h-11 py-2.5 text-right font-mono" data-label="Balance">{formatPKR(r.balance)}</td>
@@ -283,10 +219,15 @@ export default async function CustomerStatementPage({
         {/* The rail earns its place here: the one figure that matters, and the
             action you came to take. */}
         <Rail>
-          <RailBlock title="Outstanding">
+          <RailBlock title={outstanding < 0 ? "Advance" : "Outstanding"}>
             <p className="font-mono text-[30px] font-semibold leading-tight tracking-[-0.01em] text-ink">
-              {formatPKR(outstanding)}
+              {formatPKR(Math.abs(outstanding))}
             </p>
+            {outstanding < 0 && (
+              <p className="mt-1 text-[13px] text-ink-muted">
+                Paid more than billed — this credit will settle their next bills.
+              </p>
+            )}
             {oldestOwingDays !== null && outstanding > 0 && (
               <p className="mt-1 text-[13px] text-warn">
                 Oldest unpaid bill {oldestOwingDays} days

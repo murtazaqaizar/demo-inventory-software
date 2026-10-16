@@ -3,8 +3,11 @@
 import { useActionState, useState } from "react";
 import { voidInvoice } from "./actions";
 import { Button, Input } from "@/components/ui";
+import { formatPKR } from "@/lib/money";
 
-export function VoidButton({ invoiceId, number }: { invoiceId: string; number: number }) {
+// `paidLaterPaisa`: account payments currently applied to this bill. Voiding does
+// not undo them — they stay on the customer's account and settle their next bill.
+export function VoidButton({ invoiceId, number, paidLaterPaisa = 0 }: { invoiceId: string; number: number; paidLaterPaisa?: number }) {
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState(
     async (_p: { ok: boolean; error?: string }, fd: FormData) => voidInvoice(fd),
@@ -33,7 +36,14 @@ export function VoidButton({ invoiceId, number }: { invoiceId: string; number: n
       <button type="button" onClick={() => setOpen(false)} className="px-2 text-sm text-ink-muted">
         Cancel
       </button>
-      {state.error && <span className="text-[13px] text-bad">{state.error}</span>}
+      {paidLaterPaisa > 0 && (
+        <span className="basis-full text-[13px] text-warn">
+          {formatPKR(paidLaterPaisa)} paid later on the customer&apos;s account is applied to this bill. After voiding it stays
+          on their account as an advance and will settle their next bill. If that payment was also a mistake, reverse it
+          from the customer&apos;s statement.
+        </span>
+      )}
+      {state.error && <span className="basis-full text-[13px] text-bad">{state.error}</span>}
     </form>
   );
 }

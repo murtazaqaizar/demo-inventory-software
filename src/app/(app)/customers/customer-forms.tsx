@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState } from "react";
-import { createCustomer, recordCustomerPayment, restoreCustomer, type ActionResult } from "./actions";
+import { useActionState, useState } from "react";
+import { createCustomer, recordCustomerPayment, restoreCustomer, reverseCustomerPayment, type ActionResult } from "./actions";
 import { Button, Panel, Input, Label, Select, numInputClass } from "@/components/ui";
 
 export function AddCustomer({ canSetOpening }: { canSetOpening: boolean }) {
@@ -45,13 +45,16 @@ export function AddCustomer({ canSetOpening }: { canSetOpening: boolean }) {
 }
 
 export function CustomerPayment({ customerId }: { customerId: string }) {
+  const [method, setMethod] = useState("CASH");
   const [state, formAction, pending] = useActionState(
     async (_p: ActionResult, fd: FormData) => recordCustomerPayment(fd),
     { ok: false }
   );
   return (
-    <form action={formAction} className="flex items-center gap-1">
+    <form action={formAction} className="flex flex-wrap items-center gap-1">
       <input type="hidden" name="customerId" value={customerId} />
+      {/* The server warned that this is more than they owe; sending again confirms it. */}
+      {state.overpay && <input type="hidden" name="confirmOverpay" value="1" />}
       <Input
         name="amountRs"
         type="number"
@@ -62,15 +65,52 @@ export function CustomerPayment({ customerId }: { customerId: string }) {
         aria-label="Payment amount"
         required
       />
-      <Select name="method" defaultValue="CASH" className="w-24" aria-label="Payment method">
+      <Select name="method" value={method} onChange={(e) => setMethod(e.target.value)} className="w-24" aria-label="Payment method">
         <option value="CASH">Cash</option>
         <option value="ONLINE">Online</option>
         <option value="CHEQUE">Cheque</option>
       </Select>
-      <Button type="submit" variant="secondary" disabled={pending} className="px-3 py-2">
-        {pending ? "…" : "Pay"}
+      {method === "CHEQUE" && (
+        <>
+          <Input name="chequeNumber" placeholder="Cheque #" className="w-24" aria-label="Cheque number" required />
+          <Input name="chequeBank" placeholder="Bank" className="w-20" aria-label="Bank" />
+        </>
+      )}
+      <Button type="submit" variant={state.overpay ? "danger" : "secondary"} disabled={pending} className="px-3 py-2">
+        {pending ? "…" : state.overpay ? "Pay anyway" : "Pay"}
       </Button>
+      {state.overpay && <span className="basis-full text-[13px] text-warn">{state.overpay}</span>}
       {state.error && <span className="text-[13px] text-bad">{state.error}</span>}
+    </form>
+  );
+}
+
+// Owner-only "Reverse" link on a payment row of the customer statement. Asks for
+// a second click before doing it, since the customer will owe the money again.
+export function ReversePayment({ paymentId, label }: { paymentId: string; label: string }) {
+  const [sure, setSure] = useState(false);
+  const [state, formAction, pending] = useActionState(
+    async (_p: ActionResult, fd: FormData) => reverseCustomerPayment(fd),
+    { ok: false }
+  );
+  if (!sure) {
+    return (
+      <button type="button" onClick={() => setSure(true)} className="no-print text-xs text-bad underline">
+        Reverse
+      </button>
+    );
+  }
+  return (
+    <form action={formAction} className="no-print inline-flex flex-wrap items-center gap-1">
+      <input type="hidden" name="paymentId" value={paymentId} />
+      <span className="text-xs text-ink-muted">Reverse {label}? The customer will owe it again.</span>
+      <Button type="submit" variant="danger" disabled={pending} className="px-2 py-1 text-xs">
+        {pending ? "…" : "Yes, reverse"}
+      </Button>
+      <button type="button" onClick={() => setSure(false)} className="text-xs text-ink-muted">
+        Cancel
+      </button>
+      {state.error && <span className="text-xs text-bad">{state.error}</span>}
     </form>
   );
 }

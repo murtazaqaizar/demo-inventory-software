@@ -6,14 +6,15 @@
  *
  * Every check states the CORRECT business result, so a FAIL is a bug.
  *
- * The balance / "paid later" / aging / cash / stock / income numbers come from the
- * REAL shipped src/lib functions. They import a module-level `prisma`, so before
- * importing them this script puts a proxy on globalThis.prisma that forwards to
- * the current interactive transaction — the shipped code then sees the fixture.
+ * Everything runs the REAL shipped code: voiding (voidInvoiceTx), the edit and
+ * return guards, customer payments and their reversal, the statement, balances,
+ * "paid later", aging, cash, stock and income. Those modules import a
+ * module-level `prisma`, so before importing them this script puts a proxy on
+ * globalThis.prisma that forwards to the current interactive transaction — the
+ * shipped code then sees the fixture.
  *
- * The server actions ("use server" files) cannot be imported by a script, so each
- * action is mirrored step by step below, with the source line it copies. Keep the
- * mirrors in sync when the actions change.
+ * Only setChequeStatus is still mirrored (it lives in a "use server" file and
+ * has no logic beyond the two writes copied below).
  *
  * Runs inside ONE interactive transaction that is always rolled back.
  */
@@ -42,12 +43,15 @@ let current: Tx | null = null;
   },
 });
 
-const { writeSaleStock, writeInvoicePayments, reverseInvoiceMoney, writeVoidRestock } = await import(
+const { writeSaleStock, writeInvoicePayments, reverseInvoiceMoney, voidInvoiceTx, editBlocker } = await import(
   "../src/lib/billing-effects.js"
 );
-const { getCustomerBalance, getLaterPaidByInvoice, getAging, getTotalReceivable } = await import(
+const { getCustomerBalance, getLaterPaidByInvoice, getAging, getTotalReceivable, sumPaid, PAYMENTS_WITH_CHEQUE } = await import(
   "../src/lib/receivables.js"
 );
+const { recordCustomerPaymentTx, reverseCustomerPaymentTx, overpaymentWarning } = await import("../src/lib/customer-payments.js");
+const { returnBillError } = await import("../src/lib/returns.js");
+const { buildStatement } = await import("../src/lib/statement.js");
 const { getAccountBalances } = await import("../src/lib/money-accounts.js");
 const { getCurrentStock } = await import("../src/lib/stock.js");
 const { getIncomeStatement } = await import("../src/lib/reports.js");
@@ -78,11 +82,12 @@ class Rollback extends Error {}
 const RS = 100; // paisa per rupee
 
 type Pay = { method: "CASH" | "ONLINE" | "CHEQUE"; amountPaisa: number; chequeNumber?: string; chequeBank?: string };
+type Customer = { id: string; name: string };
 
-// --- mirrors of the server actions -------------------------------------------
+// --- fixture helpers -----------------------------------------------------------
 
 // billing/actions.ts createInvoice: invoice + items, stock out, money in.
-async function makeBill(tx: Tx, customer: { id: string; name: string }, productId: string, qty: number, rateRs: number, pays: Pay[], date?: Date) {
+async function makeBill(tx: Tx, customer: Customer, productId: string, qty: number, rateRs: number, pays: Pay[], date?: Date) {
   const total = qty * rateRs * RS;
   const received = pays.reduce((s, p) => s + p.amountPaisa, 0);
   const lines = [{ productId, colorId: null, description: null, unit: "pcs", qtyMilli: qty * 1000, ratePaisa: rateRs * RS, unitCostPaisa: 1000 * RS, isSample: false }];
@@ -99,26 +104,16 @@ async function makeBill(tx: Tx, customer: { id: string; name: string }, productI
   return inv;
 }
 
-// billing/actions.ts voidInvoice (line ~394): restock, reverse money (NO date
-// passed — as shipped), mark VOIDED.
-async function voidBill(tx: Tx, invoiceId: string) {
-  const invoice = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { items: true, payments: true } });
-  await writeVoidRestock(tx, invoice.id, invoice.number, invoice.items);
-  await reverseInvoiceMoney(tx, invoice.payments, { note: `Bill #${invoice.number} voided`, chequeAction: "bounce" });
-  await tx.invoice.update({ where: { id: invoiceId }, data: { status: "VOIDED", voidedAt: new Date(), voidReason: "test" } });
-}
+const voidBill = (tx: Tx, invoiceId: string) => voidInvoiceTx(tx, invoiceId, { userId: null, reason: "test" });
 
-// customers/actions.ts recordCustomerPayment: Payment row + CUSTOMER_PAYMENT movement.
-async function receivePayment(tx: Tx, customerId: string, amountPaisa: number, method: "CASH" | "ONLINE" | "CHEQUE" = "CASH") {
-  await tx.payment.create({ data: { customerId, amountPaisa, method, note: "Payment received" } });
-  if (method === "CASH" || method === "ONLINE") {
-    const account = await tx.moneyAccount.findFirst({ where: { kind: method === "CASH" ? "CASH" : "BANK" } });
-    if (account) await tx.moneyMovement.create({ data: { accountId: account.id, type: "CUSTOMER_PAYMENT", amountPaisa, note: "Payment from customer" } });
-  }
-}
+const receivePayment = (tx: Tx, c: Customer, amountPaisa: number, method: "CASH" | "ONLINE" | "CHEQUE" = "CASH") =>
+  recordCustomerPaymentTx(tx, { customerId: c.id, customerName: c.name, amountPaisa, method, chequeNumber: method === "CHEQUE" ? "555" : undefined });
 
-// returns/actions.ts createReturn, CREDIT_TO_ACCOUNT: credit note + RETURN_IN stock.
+// returns/actions.ts createReturn, CREDIT_TO_ACCOUNT: the bill guard, then credit
+// note + RETURN_IN stock. Returns the guard's error when it refuses.
 async function returnToAccount(tx: Tx, customerId: string, invoiceId: string, productId: string, qty: number, rateRs: number) {
+  const error = await returnBillError(tx, customerId, invoiceId);
+  if (error) return { error };
   const note = await tx.creditNote.create({
     data: {
       customerId,
@@ -130,7 +125,7 @@ async function returnToAccount(tx: Tx, customerId: string, invoiceId: string, pr
   await tx.stockMovement.create({
     data: { productId, type: "RETURN_IN", qtyMilli: qty * 1000, unitCostPaisa: 1000 * RS, reason: `Return — credit note #${note.number}`, creditNoteId: note.id },
   });
-  return note;
+  return { error: null };
 }
 
 // cheques/actions.ts setChequeStatus.
@@ -139,7 +134,7 @@ async function setCheque(tx: Tx, chequeId: string, status: "CLEARED" | "BOUNCED"
   await tx.cheque.update({ where: { id: chequeId }, data: { status, clearedAt: status === "CLEARED" ? new Date() : null } });
   if (status === "CLEARED") {
     const bank = await tx.moneyAccount.findFirst({ where: { kind: "BANK" } });
-    if (bank) await tx.moneyMovement.create({ data: { accountId: bank.id, type: "CHEQUE_CLEAR", amountPaisa: cheque.amountPaisa, note: `Cheque ${cheque.number}` } });
+    if (bank) await tx.moneyMovement.create({ data: { accountId: bank.id, type: "CHEQUE_CLEAR", amountPaisa: cheque.amountPaisa, note: `Cheque ${cheque.number} (RECEIVED) → bank` } });
   }
 }
 
@@ -148,11 +143,11 @@ async function setCheque(tx: Tx, chequeId: string, status: "CLEARED" | "BOUNCED"
 const rs = (paisa: number) => paisa / RS;
 const balance = async (customerId: string) => rs(await getCustomerBalance(customerId));
 async function billOwing(tx: Tx, invoiceId: string) {
-  // Same sum the billing list (billing/page.tsx:86) and print page use.
-  const inv = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { items: true, payments: true } });
+  // Same sum the billing list (billing/page.tsx) and print page use.
+  const inv = await tx.invoice.findUniqueOrThrow({ where: { id: invoiceId }, include: { items: true, payments: PAYMENTS_WITH_CHEQUE } });
   const total = inv.items.reduce((s, it) => s + Math.round((it.qtyMilli * it.ratePaisa) / 1000), 0);
   const later = (await getLaterPaidByInvoice([inv.customerId])).get(inv.id) ?? 0;
-  const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0) + later;
+  const paid = sumPaid(inv.payments) + later;
   return { owing: rs(inv.status === "VOIDED" ? 0 : total - paid), paidLater: rs(later) };
 }
 async function cashBank() {
@@ -182,49 +177,73 @@ try {
         const c = await newCustomer("reported");
         const a = await makeBill(tx, c, product.id, 1, 50_000, [{ method: "CASH", amountPaisa: 30_000 * RS }]);
         check("bill A owes 20,000 after billing", (await billOwing(tx, a.id)).owing, 20_000);
-        await receivePayment(tx, c.id, 20_000 * RS);
+        await receivePayment(tx, c, 20_000 * RS);
         check("lump sum of 20,000 settles bill A", await billOwing(tx, a.id), { owing: 0, paidLater: 20_000 });
-        await voidBill(tx, a.id);
-        info("customer balance after voiding A (negative = advance held for them)", await balance(c.id));
+        check("voiding A goes through", (await voidBill(tx, a.id)).ok, true);
+        check("the 20,000 stays as an advance held for the customer", await balance(c.id), -20_000);
         const b = await makeBill(tx, c, product.id, 1, 50_000, [{ method: "CASH", amountPaisa: 30_000 * RS }]);
         const bOwing = await billOwing(tx, b.id);
-        info("new bill B — owing / 'paid later' (the 20,000 paid for voided A moves onto B)", bOwing);
-        check("the advance is visible: balance after B equals B's owing", await balance(c.id), bOwing.owing);
-        // Nothing on the customer statement says where B's 'paid later' came from:
-        // customers/[id]/page.tsx:59 loads only ACTIVE bills, so A is gone.
-        const statementBills = await tx.invoice.count({ where: { customerId: c.id, status: "ACTIVE" } });
-        check("customer statement still lists the voided bill A (as a zero line)", statementBills, 2);
+        info("new bill B — owing / settled from the advance", bOwing);
+        check("the advance is consistent: balance after B equals B's owing", await balance(c.id), bOwing.owing);
+        const st = (await buildStatement(c.id))!;
+        check("customer statement still lists the voided bill A (as a zero line)", st.rows.some((r) => r.voided && r.kind === `Bill #${a.number}`), true);
+      }
+
+      // =====================================================================
+      heading("1b. Reversing a payment entered by mistake");
+      {
+        const c = await newCustomer("reverse");
+        const m0 = await cashBank();
+        const bill = await makeBill(tx, c, product.id, 1, 30_000, []);
+        const p = await receivePayment(tx, c, 30_000 * RS);
+        check("payment settles the bill", (await billOwing(tx, bill.id)).owing, 0);
+        check("reversal goes through", (await reverseCustomerPaymentTx(tx, p.id)).ok, true);
+        check("the customer owes the 30,000 again", await balance(c.id), 30_000);
+        check("the bill shows 30,000 owing again", (await billOwing(tx, bill.id)).owing, 30_000);
+        check("cash book nets to zero (in, then back out)", (await cashBank()).cash - m0.cash, 0);
+        check("the payment row is gone", await tx.payment.count({ where: { customerId: c.id } }), 0);
+      }
+
+      // =====================================================================
+      heading("1c. Paying more than the customer owes is flagged");
+      {
+        check("no warning when paying exactly what is owed", overpaymentWarning("X", 10_000 * RS, 10_000 * RS), null);
+        check("warning when it would leave an advance", overpaymentWarning("X", 10_000 * RS, 15_000 * RS) !== null, true);
+        check("warning when the customer owes nothing", overpaymentWarning("X", 0, 1 * RS) !== null, true);
       }
 
       // =====================================================================
       heading("2. Voiding a bill that already has a return credited to the account");
       {
         const c = await newCustomer("void-after-return");
-        const s0 = await stock(product.id);
         const bill = await makeBill(tx, c, product.id, 2, 25_000, []); // all on credit
         await returnToAccount(tx, c.id, bill.id, product.id, 1, 25_000);
         check("after the return the customer owes 25,000", await balance(c.id), 25_000);
+        const s0 = await stock(product.id);
         const fromMonth = new Date(Date.now() - 86_400_000), to = new Date(Date.now() + 86_400_000);
         const sales0 = (await getIncomeStatement(fromMonth, to)).statement.salesPaisa;
-        await voidBill(tx, bill.id);
-        check("after voiding, the customer owes 0 (not an advance)", await balance(c.id), 0);
-        check("after voiding, stock is back where it started", await stock(product.id), s0);
+        const res = await voidBill(tx, bill.id);
+        check("the void is refused while the bill has a return", res.ok, false);
+        check("nothing changed: the customer still owes 25,000", await balance(c.id), 25_000);
+        check("nothing changed: stock not put back a second time", await stock(product.id), s0);
         const sales1 = (await getIncomeStatement(fromMonth, to)).statement.salesPaisa;
-        check("voiding removes exactly the NET sale (50,000 − 25,000 return)", rs(sales0 - sales1), 25_000);
+        check("nothing changed: sales unchanged", rs(sales0 - sales1), 0);
       }
 
       // =====================================================================
-      heading("3. A return can be made against a bill that is already voided");
+      heading("3. A return against a bill that is already voided");
       {
         const c = await newCustomer("return-after-void");
         const bill = await makeBill(tx, c, product.id, 1, 10_000, []);
         await voidBill(tx, bill.id);
-        // returns/actions.ts does not check the bill's status or customer; the
-        // database accepts it, so the action does too.
         const s0 = await stock(product.id);
-        await returnToAccount(tx, c.id, bill.id, product.id, 1, 10_000);
+        const res = await returnToAccount(tx, c.id, bill.id, product.id, 1, 10_000);
+        check("the return is refused", res.error !== null, true);
         check("customer is not credited for goods on a voided bill", await balance(c.id), 0);
         check("stock does not come back twice", await stock(product.id), s0);
+        const other = await newCustomer("someone-else");
+        const live = await makeBill(tx, c, product.id, 1, 10_000, []);
+        check("a return cannot be booked against another customer's bill", (await returnBillError(tx, other.id, live.id)) !== null, true);
       }
 
       // =====================================================================
@@ -236,6 +255,8 @@ try {
         await setCheque(tx, chq.chequeId!, "BOUNCED");
         check("customer owes the bounced 40,000 again", await balance(c.id), 40_000);
         check("the bill shows 40,000 owing again", (await billOwing(tx, bill.id)).owing, 40_000);
+        const aging = (await getAging()).find((r) => r.customerId === c.id);
+        check("aging lists the 40,000", rs(aging?.total ?? 0), 40_000);
       }
 
       // =====================================================================
@@ -250,10 +271,7 @@ try {
         await voidBill(tx, bill.id);
         const cheque = await tx.cheque.findUniqueOrThrow({ where: { id: chq.chequeId! } });
         check("register keeps the cheque as CLEARED (it really was paid)", cheque.status, "CLEARED");
-        const after = await cashBank();
-        // Either the bank goes back to where it was (money refunded), or the money
-        // stays and the customer is left with a 30,000 advance. Not both missing.
-        const bankKept = after.bank - m0.bank;
+        const bankKept = (await cashBank()).bank - m0.bank;
         const advance = -(await balance(c.id));
         check("money kept in bank is matched by the customer's advance", bankKept, advance);
       }
@@ -267,15 +285,20 @@ try {
         const bill = await makeBill(tx, c, product.id, 1, 20_000, [pay]);
         const chq = await tx.invoicePayment.findFirstOrThrow({ where: { invoiceId: bill.id } });
         await setCheque(tx, chq.chequeId!, "CLEARED");
-        // billing/actions.ts editInvoice: reverse (cheque DELETED), drop payments,
-        // re-write the same payment from the form.
-        const old = await tx.invoicePayment.findMany({ where: { invoiceId: bill.id } });
-        await reverseInvoiceMoney(tx, old, { note: "edited", chequeAction: "delete", date: bill.date });
-        await tx.invoicePayment.deleteMany({ where: { invoiceId: bill.id } });
-        await writeInvoicePayments(tx, { invoiceId: bill.id, invoiceNumber: bill.number, customerName: c.name, note: "edited" }, [pay]);
+        // billing/actions.ts editInvoice: guard first; only then reverse + rewrite.
+        const blocked = await editBlocker(tx, bill.id);
+        check("the edit is refused", blocked !== null, true);
+        if (!blocked) {
+          const old = await tx.invoicePayment.findMany({ where: { invoiceId: bill.id } });
+          await reverseInvoiceMoney(tx, old, { note: "edited", chequeAction: "delete", date: bill.date });
+          await tx.invoicePayment.deleteMany({ where: { invoiceId: bill.id } });
+          await writeInvoicePayments(tx, { invoiceId: bill.id, invoiceNumber: bill.number, customerName: c.name, note: "edited" }, [pay]);
+        }
         const pending = await tx.cheque.count({ where: { partyName: c.name, status: "PENDING" } });
         check("no new PENDING cheque for money that already cleared", pending, 0);
         check("bank still shows the 20,000 exactly once", (await cashBank()).bank - m0.bank, 20_000);
+        const fresh = await makeBill(tx, c, product.id, 1, 5_000, [{ method: "CHEQUE", amountPaisa: 5_000 * RS, chequeNumber: "334" }]);
+        check("a bill whose cheque is still PENDING can be edited", await editBlocker(tx, fresh.id), null);
       }
 
       // =====================================================================
@@ -307,7 +330,7 @@ try {
         const owes = await newCustomer("owes");
         await makeBill(tx, owes, product.id, 1, 10_000, []);
         const ahead = await newCustomer("in-advance");
-        await receivePayment(tx, ahead.id, 10_000 * RS);
+        await receivePayment(tx, ahead, 10_000 * RS);
         check("'Who owes me' grows by the 10,000 owed; an advance does not cancel it", rs(await getTotalReceivable()) - t0, 10_000);
       }
 
@@ -315,9 +338,23 @@ try {
       heading("10. Lump-sum payment by cheque");
       {
         const c = await newCustomer("cheque-lump-sum");
-        await receivePayment(tx, c.id, 15_000 * RS, "CHEQUE");
-        const p = await tx.payment.findFirstOrThrow({ where: { customerId: c.id } });
+        await makeBill(tx, c, product.id, 1, 15_000, []);
+        const p = await receivePayment(tx, c, 15_000 * RS, "CHEQUE");
         check("a cheque payment is entered in the cheque register (so it can clear or bounce)", p.chequeId !== null, true);
+        check("while pending it counts as paid", await balance(c.id), 0);
+        await setCheque(tx, p.chequeId!, "BOUNCED");
+        check("when it bounces the customer owes the 15,000 again", await balance(c.id), 15_000);
+      }
+
+      // =====================================================================
+      heading("11. Voiding a bill made from a quotation");
+      {
+        const c = await newCustomer("quotation");
+        const bill = await makeBill(tx, c, product.id, 1, 8_000, []);
+        const q = await tx.quotation.create({ data: { customerId: c.id, status: "ACCEPTED", invoiceId: bill.id, closedAt: new Date() } });
+        await voidBill(tx, bill.id);
+        const after = await tx.quotation.findUniqueOrThrow({ where: { id: q.id } });
+        check("the quotation is open again, so it can be billed again", [after.status, after.invoiceId], ["OPEN", null]);
       }
 
       current = null;

@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { requireOwnerPage } from "@/lib/guards";
+import { dayEnd, dayStart } from "@/lib/dates";
 import {
   Badge,
   EmptyState,
@@ -41,12 +42,8 @@ export default async function ActivityPage({
   }
   if (sp.from || sp.to) {
     where.createdAt = {};
-    if (sp.from) where.createdAt.gte = new Date(sp.from);
-    if (sp.to) {
-      const end = new Date(sp.to);
-      end.setHours(23, 59, 59, 999);
-      where.createdAt.lte = end;
-    }
+    if (sp.from) where.createdAt.gte = dayStart(sp.from);
+    if (sp.to) where.createdAt.lte = dayEnd(sp.to);
   }
 
   const [logs, total] = await Promise.all([

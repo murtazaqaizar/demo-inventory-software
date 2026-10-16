@@ -212,12 +212,15 @@ async function main() {
     }
   }
 
-  // getTotalReceivable() must equal the old page's sum over active credit customers.
+  // getTotalReceivable() must equal the old page's sum over active credit customers —
+  // counting only customers who owe. A customer in advance is no longer netted off
+  // against everyone else (verify-void-ledger section 9), so each balance is
+  // floored at zero here too.
   const activeCredit = await prisma.customer.findMany({
     where: { isCashCustomer: false, active: true },
     select: { id: true },
   });
-  const expectedTotal = activeCredit.reduce((s, c) => s + (oldBal.get(c.id) ?? 0), 0);
+  const expectedTotal = activeCredit.reduce((s, c) => s + Math.max(0, oldBal.get(c.id) ?? 0), 0);
   const actualTotal = await getTotalReceivable();
   if (expectedTotal !== actualTotal) {
     failures++;

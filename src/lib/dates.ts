@@ -31,6 +31,21 @@ export function dateFromInput(value?: string | null): Date | undefined {
   return Number.isNaN(when.getTime()) ? undefined : when;
 }
 
+/**
+ * Start / end of a `YYYY-MM-DD` filter day, in the shop's local time.
+ *
+ * `new Date("2026-10-16")` is midnight UTC — 05:00 in Pakistan — so a "from"
+ * filter built that way skipped everything entered between midnight and 5 AM,
+ * and a "to" filter built with setHours on it ran five hours into the next day.
+ * Adding a time without a zone makes JavaScript read it as local time.
+ */
+export function dayStart(value: string): Date {
+  return new Date(`${value}T00:00:00`);
+}
+export function dayEnd(value: string): Date {
+  return new Date(`${value}T23:59:59.999`);
+}
+
 /** Whole days between `from` and now. Used for "oldest unpaid bill N days". */
 export function daysSince(from: Date, now: Date = new Date()): number {
   return Math.floor((now.getTime() - from.getTime()) / 86_400_000);

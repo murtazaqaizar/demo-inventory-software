@@ -1,8 +1,9 @@
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { requireUser } from "@/lib/guards";
+import { dayEnd, dayStart } from "@/lib/dates";
 import { formatPKR } from "@/lib/money";
-import { getLaterPaidByInvoice, sumLines } from "@/lib/receivables";
+import { getLaterPaidByInvoice, sumLines, sumPaid, PAYMENTS_WITH_CHEQUE } from "@/lib/receivables";
 import {
   Badge,
   Button,
@@ -52,12 +53,8 @@ export default async function BillingPage({
   }
   if (sp.from || sp.to) {
     where.date = {};
-    if (sp.from) where.date.gte = new Date(sp.from);
-    if (sp.to) {
-      const end = new Date(sp.to);
-      end.setHours(23, 59, 59, 999);
-      where.date.lte = end;
-    }
+    if (sp.from) where.date.gte = dayStart(sp.from);
+    if (sp.to) where.date.lte = dayEnd(sp.to);
   }
 
   const [invoices, total] = await Promise.all([
@@ -71,7 +68,7 @@ export default async function BillingPage({
           : { date: "desc" },
       skip: (page - 1) * PAGE_SIZE,
       take: PAGE_SIZE,
-      include: { customer: true, items: true, payments: true },
+      include: { customer: true, items: true, payments: PAYMENTS_WITH_CHEQUE },
     }),
     prisma.invoice.count({ where }),
   ]);
@@ -83,7 +80,7 @@ export default async function BillingPage({
   // Decorate once so the group aggregates and the rows agree.
   const rows = invoices.map((inv) => {
     const totalPaisa = sumLines(inv.items);
-    const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0) + (laterPaid.get(inv.id) ?? 0);
+    const paid = sumPaid(inv.payments) + (laterPaid.get(inv.id) ?? 0);
     const voided = inv.status === "VOIDED";
     return {
       inv,
@@ -219,7 +216,7 @@ export default async function BillingPage({
                                 {owner && !voided && (
                                   <>
                                     <Link href={`/billing/${inv.id}/edit`}>Edit bill</Link>
-                                    <VoidButton invoiceId={inv.id} number={inv.number} />
+                                    <VoidButton invoiceId={inv.id} number={inv.number} paidLaterPaisa={laterPaid.get(inv.id) ?? 0} />
                                   </>
                                 )}
                               </RowMenu>

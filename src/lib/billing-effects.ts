@@ -185,16 +185,22 @@ export async function reverseInvoiceMoney(
   if (chequeIds.length > 0) {
     if (opts.chequeAction === "delete") {
       // Drop the link first — the payment rows may outlive this call.
+      // (editInvoice refuses bills whose cheque already cleared or bounced — see
+      // editBlocker — so every cheque here is still PENDING.)
       await tx.invoicePayment.updateMany({
         where: { id: { in: payments.filter((p) => p.chequeId).map((p) => p.id) } },
         data: { chequeId: null },
       });
       await tx.cheque.deleteMany({ where: { id: { in: chequeIds } } });
     } else {
+      // A PENDING cheque is handed back and never presented: mark it BOUNCED so
+      // the register shows it failed. A CLEARED cheque is different — the money
+      // really reached us, so it stays CLEARED and is refunded below.
       await tx.cheque.updateMany({
-        where: { id: { in: chequeIds } },
+        where: { id: { in: chequeIds }, status: "PENDING" },
         data: { status: "BOUNCED", clearedAt: null },
       });
+      await refundClearedCheques(tx, chequeIds, opts.note);
     }
   }
 
@@ -215,6 +221,108 @@ export async function reverseInvoiceMoney(
       ...(opts.date ? { date: opts.date } : {}),
     }));
   if (movements.length > 0) await tx.moneyMovement.createMany({ data: movements });
+}
+
+// Money from a cleared cheque on a voided bill has to go back out of the account
+// it was cashed or deposited into, today — that is when the refund happens.
+//
+// The cheque row has no account of its own; setChequeStatus writes the
+// destination into the CHEQUE_CLEAR movement's note ("Cheque 123 (RECEIVED) →
+// cash"), so that is where it is read back from. Falls back to the bank.
+export async function refundClearedCheques(tx: Tx, chequeIds: string[], note: string) {
+  const cleared = await tx.cheque.findMany({ where: { id: { in: chequeIds }, status: "CLEARED" } });
+  if (cleared.length === 0) return;
+  const [accounts, clears] = await Promise.all([
+    getMoneyAccountIds(tx),
+    tx.moneyMovement.findMany({
+      where: {
+        type: "CHEQUE_CLEAR",
+        OR: cleared.map((c) => ({ amountPaisa: c.amountPaisa, note: { startsWith: `Cheque ${c.number} (RECEIVED)` } })),
+      },
+      select: { accountId: true, amountPaisa: true, note: true },
+    }),
+  ]);
+  const data = cleared
+    .map((c) => {
+      const clear = clears.find((m) => m.amountPaisa === c.amountPaisa && m.note?.startsWith(`Cheque ${c.number} (RECEIVED)`));
+      return { accountId: clear?.accountId ?? accounts.get("BANK"), amountPaisa: c.amountPaisa, number: c.number };
+    })
+    .filter((m): m is { accountId: string; amountPaisa: number; number: string } => Boolean(m.accountId))
+    .map((m) => ({
+      accountId: m.accountId,
+      type: "VOID_REVERSAL" as const,
+      amountPaisa: -m.amountPaisa,
+      note: `${note} — refund of cleared cheque ${m.number}`,
+    }));
+  if (data.length > 0) await tx.moneyMovement.createMany({ data });
+}
+
+// Why a bill cannot be voided, or null when it can.
+//
+// A bill with a return against it: the return already put some goods back and
+// credited (or refunded) the customer. Voiding would restock the WHOLE bill and
+// drop the whole charge, so those goods and that credit would count twice.
+export async function voidBlocker(tx: Tx, invoiceId: string): Promise<string | null> {
+  const returns = await tx.creditNote.findMany({ where: { invoiceId }, select: { number: true }, orderBy: { number: "asc" } });
+  if (returns.length === 0) return null;
+  const list = returns.map((r) => `#${r.number}`).join(", ");
+  return `This bill has return ${list} against it. Voiding it would put those goods back into stock and credit the customer twice. Edit the bill instead, or record a return for the rest of the goods.`;
+}
+
+// Why a bill cannot be edited, or null when it can.
+//
+// Editing removes and re-creates the bill's payments. A cheque that already
+// cleared is money in the bank, and one that bounced is history the register
+// must keep — re-creating either would leave a fresh PENDING cheque for money
+// that has already been settled one way or the other.
+export async function editBlocker(tx: Tx, invoiceId: string): Promise<string | null> {
+  const settled = await tx.invoicePayment.findMany({
+    where: { invoiceId, cheque: { status: { in: ["CLEARED", "BOUNCED"] } } },
+    select: { cheque: { select: { number: true, status: true } } },
+  });
+  if (settled.length === 0) return null;
+  const c = settled[0].cheque!;
+  return `Cheque ${c.number} on this bill has already ${c.status === "CLEARED" ? "cleared" : "bounced"}, so its payments can no longer be changed. Void the bill and make a new one, or record a return.`;
+}
+
+// Void a bill: stock back, money taken at billing reversed, status VOIDED, and the
+// quotation it came from (if any) re-opened so it can be billed again.
+//
+// The reversal of cash/online money is dated to the BILL's day — a voided bill
+// is a wrong entry, so that day's cash book should net to zero rather than leave
+// it high and today's short.
+export async function voidInvoiceTx(
+  tx: Tx,
+  invoiceId: string,
+  by: { userId: string | null; reason: string }
+): Promise<{ ok: true; number: number; customerName: string } | { ok: false; error: string }> {
+  const invoice = await tx.invoice.findUnique({
+    where: { id: invoiceId },
+    include: { items: true, payments: true, customer: true, quotation: { select: { id: true } } },
+  });
+  if (!invoice) return { ok: false, error: "Bill not found" };
+  if (invoice.status === "VOIDED") return { ok: false, error: "Already voided" };
+  const blocked = await voidBlocker(tx, invoiceId);
+  if (blocked) return { ok: false, error: blocked };
+
+  // Put the stock back with reversing movements (history stays traceable).
+  await writeVoidRestock(tx, invoice.id, invoice.number, invoice.items);
+  await reverseInvoiceMoney(tx, invoice.payments, {
+    note: `Bill #${invoice.number} voided`,
+    chequeAction: "bounce",
+    date: invoice.date,
+  });
+  await tx.invoice.update({
+    where: { id: invoiceId },
+    data: { status: "VOIDED", voidedAt: new Date(), voidedById: by.userId, voidReason: by.reason },
+  });
+  if (invoice.quotation) {
+    await tx.quotation.update({
+      where: { id: invoice.quotation.id },
+      data: { status: "OPEN", invoiceId: null, closedAt: null },
+    });
+  }
+  return { ok: true, number: invoice.number, customerName: invoice.customer.name };
 }
 
 // Stock coming back in when a bill is voided — reversing rows rather than

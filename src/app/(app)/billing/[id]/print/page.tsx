@@ -4,7 +4,7 @@ import { docTitle } from "@/lib/doc-title";
 import { requireUser } from "@/lib/guards";
 import { formatPKR } from "@/lib/money";
 import { formatQtyUnit } from "@/lib/qty";
-import { getLaterPaidByInvoice, lineTotal, sumLines } from "@/lib/receivables";
+import { getLaterPaidByInvoice, isBounced, lineTotal, sumLines, sumPaid, PAYMENTS_WITH_CHEQUE } from "@/lib/receivables";
 import { getBusinessSettings } from "@/lib/settings";
 import { contactLine, dateFieldOf, drawsTextHeader } from "@/lib/letterhead";
 import { PrintSheet } from "@/components/print-sheet";
@@ -29,13 +29,14 @@ export default async function InvoicePrintPage({
 
   const invoice = await prisma.invoice.findUnique({
     where: { id },
-    include: { customer: true, items: { include: { product: true, color: { select: { name: true } } } }, payments: true },
+    include: { customer: true, items: { include: { product: true, color: { select: { name: true } } } }, payments: PAYMENTS_WITH_CHEQUE },
   });
   if (!invoice) notFound();
 
   const total = sumLines(invoice.items);
 
-  const paid = invoice.payments.reduce((s, p) => s + p.amountPaisa, 0);
+  // A bounced cheque was never money received — it stays listed but isn't paid.
+  const paid = sumPaid(invoice.payments);
   // Paid on the customer's account after the bill was made, applied oldest bill
   // first. A voided bill is not a charge, so nothing is applied to it.
   const paidLater =
@@ -108,8 +109,9 @@ export default async function InvoicePrintPage({
               <p className="font-medium">UDHAAR</p>
             ) : (
               invoice.payments.map((p) => (
-                <p key={p.id} className="font-medium">
+                <p key={p.id} className={`font-medium ${isBounced(p) ? "text-bad line-through" : ""}`}>
                   {p.method} {formatPKR(p.amountPaisa)}
+                  {isBounced(p) && <span className="ml-1 text-xs no-underline">(bounced)</span>}
                 </p>
               ))
             )}

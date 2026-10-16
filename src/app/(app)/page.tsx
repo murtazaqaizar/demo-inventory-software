@@ -5,7 +5,7 @@ import { requireUser } from "@/lib/guards";
 import { getLowStock } from "@/lib/stock";
 import { getAging } from "@/lib/receivables";
 import { getSalesTotals, } from "@/lib/reports";
-import { getLaterPaidByInvoice, sumLines } from "@/lib/receivables";
+import { getLaterPaidByInvoice, sumLines, sumPaid, PAYMENTS_WITH_CHEQUE } from "@/lib/receivables";
 import { getAccountBalances } from "@/lib/money-accounts";
 import { formatPKR } from "@/lib/money";
 import {
@@ -67,7 +67,7 @@ export default async function DashboardPage() {
     prisma.invoice.findMany({
       orderBy: { date: "desc" },
       take: 12,
-      include: { customer: true, items: true, payments: true },
+      include: { customer: true, items: true, payments: PAYMENTS_WITH_CHEQUE },
     }),
   ]);
 
@@ -88,7 +88,7 @@ export default async function DashboardPage() {
   // Group the working list by day, same treatment as the Billing page.
   const rows = recentBills.map((inv) => {
     const totalPaisa = sumLines(inv.items);
-    const paid = inv.payments.reduce((s, p) => s + p.amountPaisa, 0) + (laterPaid.get(inv.id) ?? 0);
+    const paid = sumPaid(inv.payments) + (laterPaid.get(inv.id) ?? 0);
     const voided = inv.status === "VOIDED";
     return {
       inv,
