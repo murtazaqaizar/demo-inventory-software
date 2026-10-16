@@ -35,18 +35,25 @@ export default async function CustomerStatementPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ from?: string; to?: string }>;
+  searchParams: Promise<{ from?: string; to?: string; voided?: string }>;
 }) {
   const user = await requireUser();
   const owner = user.role === "OWNER";
   const { id } = await params;
-  const { from, to } = await searchParams;
+  const { from, to, voided } = await searchParams;
+  // The user's choice: voided bills are left off the statement unless ticked.
+  const showVoided = voided === "1";
 
   const settings = await getBusinessSettings();
 
-  const statement = await buildStatement(id, { from, to });
+  const statement = await buildStatement(id, { from, to, showVoided });
   if (!statement) notFound();
-  const { customer, opening, rows: withBalance, closing: running, bills, fromDate, toDate } = statement;
+  const { customer, opening, rows: withBalance, closing: running, bills, fromDate, toDate, voidedCount } = statement;
+  const showVoidedHref = `/customers/${id}?${new URLSearchParams({
+    ...(from ? { from } : {}),
+    ...(to ? { to } : {}),
+    voided: "1",
+  })}`;
   const { totalBilled, returnsTotal, totalReceived, outstanding } = statement.totals;
 
   const periodLabel =
@@ -87,6 +94,10 @@ export default async function CustomerStatementPage({
                   <Label htmlFor="to">To</Label>
                   <Input id="to" type="date" name="to" defaultValue={to ?? ""} className="w-auto font-mono" />
                 </div>
+                <label className="flex h-10 items-center gap-2 text-sm text-ink-muted">
+                  <input type="checkbox" name="voided" value="1" defaultChecked={showVoided} />
+                  Show voided bills
+                </label>
                 <Button type="submit" variant="secondary">Filter</Button>
                 <Link href={`/customers/${customer.id}`}>
                   <Button type="button" variant="quiet">Clear</Button>
@@ -158,6 +169,14 @@ export default async function CustomerStatementPage({
           <h2 className="text-sm font-semibold text-ink">Running statement</h2>
           <span className="text-xs text-ink-muted">{periodLabel}</span>
         </div>
+        {!showVoided && voidedCount > 0 && (
+          <p className="no-print mt-1 text-xs text-ink-muted">
+            {voidedCount} voided bill{voidedCount === 1 ? "" : "s"} hidden ·{" "}
+            <Link href={showVoidedHref} className="underline hover:text-ink">
+              Show
+            </Link>
+          </p>
+        )}
         <table className="rtable mt-2 w-full text-[15px]">
           <thead>
             <tr className="border-b border-line-strong text-left text-ink-muted">

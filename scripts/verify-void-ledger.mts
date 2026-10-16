@@ -185,8 +185,9 @@ try {
         const bOwing = await billOwing(tx, b.id);
         info("new bill B — owing / settled from the advance", bOwing);
         check("the advance is consistent: balance after B equals B's owing", await balance(c.id), bOwing.owing);
-        const st = (await buildStatement(c.id))!;
-        check("customer statement still lists the voided bill A (as a zero line)", st.rows.some((r) => r.voided && r.kind === `Bill #${a.number}`), true);
+        const st = (await buildStatement(c.id, { showVoided: true }))!;
+        check("with 'Show voided bills', the statement lists bill A as a zero line", st.rows.some((r) => r.voided && r.kind === `Bill #${a.number}`), true);
+        check("by default the statement notes it as hidden", (await buildStatement(c.id))!.voidedCount, 1);
       }
 
       // =====================================================================

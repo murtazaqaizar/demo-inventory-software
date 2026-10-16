@@ -75,7 +75,8 @@ const rs = (p: number) => p / RS;
 const day = (iso: string) => new Date(`${iso}T00:00:00.000Z`); // a form-picked day, as dateFromInput stores it
 
 type Statement = NonNullable<Awaited<ReturnType<typeof buildStatement>>>;
-const statement = async (id: string, from?: string, to?: string) => (await buildStatement(id, { from, to })) as Statement;
+const statement = async (id: string, from?: string, to?: string, showVoided = false) =>
+  (await buildStatement(id, { from, to, showVoided })) as Statement;
 const owingSum = (s: Statement) => rs(s.bills.reduce((t, b) => t + b.owing, 0));
 
 // --- fixture helpers -------------------------------------------------------------
@@ -145,20 +146,24 @@ try {
       }
 
       // =====================================================================
-      heading("B. Voided bill stays traceable on the ledger");
+      heading("B. Voided bill: hidden by default, traceable when the user asks");
       {
         const c = await newCustomer("voided");
         const a = await makeBill(tx, c, product.id, 50_000, [{ method: "CASH", amountPaisa: 30_000 * RS }], day("2026-03-01"));
         await pay(tx, c.id, 20_000, new Date("2026-03-02T09:00:00Z"));
         await voidBill(tx, a.id);
-        const s = await statement(c.id);
+        const hidden = await statement(c.id);
+        check("by default the voided bill is left off the ledger", hidden.rows.some((r) => r.voided), false);
+        check("...but the page knows one is hidden (for the 'Show' note)", hidden.voidedCount, 1);
+        const s = await statement(c.id, undefined, undefined, true);
+        check("hiding it changes no totals", [rs(hidden.closing), rs(hidden.totals.outstanding)], [rs(s.closing), rs(s.totals.outstanding)]);
         const voidedRow = s.rows.findIndex((r) => r.voided && r.kind === `Bill #${a.number}`);
-        check("voided bill is still listed in the ledger (zero-effect line)", voidedRow >= 0, true);
+        check("with 'Show voided bills' it is listed (zero-effect line)", voidedRow >= 0, true);
         check("...marked VOIDED with its reason", s.rows[voidedRow]?.note, "VOIDED — Wrong entry");
         check("...and moves no money", [s.rows[voidedRow]?.debit, s.rows[voidedRow]?.credit], [0, 0]);
         check("the 20,000 paid against it shows as an advance in the header", rs(s.totals.outstanding), -20_000);
         await makeBill(tx, c, product.id, 50_000, [{ method: "CASH", amountPaisa: 30_000 * RS }], day("2026-03-05"));
-        const s2 = await statement(c.id);
+        const s2 = await statement(c.id, undefined, undefined, true);
         const vi = s2.rows.findIndex((r) => r.voided);
         const pi = s2.rows.findIndex((r) => r.kind.startsWith("Payment"));
         check("the advance that settled the new bill is traceable: voided bill, then its payment", vi >= 0 && vi < pi, true);

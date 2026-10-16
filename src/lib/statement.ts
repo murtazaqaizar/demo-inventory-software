@@ -18,7 +18,14 @@ export type StatementRow = {
   paymentId: string | null;
 };
 
-export async function buildStatement(customerId: string, range: { from?: string; to?: string } = {}) {
+// `showVoided`: the user's choice on the statement page. Off (the default) keeps
+// the statement to real charges, the way a customer expects to read it; on lists
+// voided bills as zero lines, so a payment made for a bill that was later voided
+// can be traced. Totals are the same either way.
+export async function buildStatement(
+  customerId: string,
+  range: { from?: string; to?: string; showVoided?: boolean } = {}
+) {
   const customer = await prisma.customer.findUnique({ where: { id: customerId } });
   if (!customer) return null;
 
@@ -29,8 +36,7 @@ export async function buildStatement(customerId: string, range: { from?: string;
       include: { items: true, payments: PAYMENTS_WITH_CHEQUE },
       orderBy: { date: "asc" },
     }),
-    // Voided bills stay on the ledger as zero lines, so a payment made against a
-    // bill that was later voided can still be traced to it.
+    // Voided bills: always counted (for the "N hidden" note), listed only when asked.
     prisma.invoice.findMany({
       where: { customerId, status: "VOIDED" },
       select: { id: true, number: true, date: true, voidReason: true },
@@ -60,7 +66,7 @@ export async function buildStatement(customerId: string, range: { from?: string;
       billId: inv.id,
       paymentId: null,
     })),
-    ...voided.map((inv) => ({
+    ...(range.showVoided ? voided : []).map((inv) => ({
       date: inv.date,
       kind: `Bill #${inv.number}`,
       note: `VOIDED${inv.voidReason ? ` — ${inv.voidReason}` : ""}`,
@@ -140,6 +146,7 @@ export async function buildStatement(customerId: string, range: { from?: string;
     bills,
     fromDate,
     toDate,
+    voidedCount: voided.length,
     totals: { totalBilled, paidAtBilling, lumpTotal, returnsTotal, totalReceived, outstanding },
   };
 }
