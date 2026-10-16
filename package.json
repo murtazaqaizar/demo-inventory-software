@@ -24,6 +24,7 @@
     "verify:letterhead": "tsx scripts/verify-letterhead.mts",
     "letterhead:set": "tsx scripts/set-letterhead.mts",
     "verify:expenses": "tsx scripts/verify-expenses.mts",
+    "verify:void-ledger": "tsx scripts/verify-void-ledger.mts",
     "demo:seed": "tsx scripts/seed-demo.mts"
   },
   "dependencies": {
