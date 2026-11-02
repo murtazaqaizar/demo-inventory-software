@@ -19,7 +19,7 @@ const ALLOWED = ["image/png", "image/jpeg", "image/webp"] as const;
 const PDF = "application/pdf";
 
 // Every print page reads these, so they all have to be re-rendered on a change.
-const PRINT_PATHS = ["/billing", "/customers", "/settings"];
+const PRINT_PATHS = ["/billing", "/customers", "/quotations", "/purchase-orders", "/settings"];
 function revalidatePrintPages() {
   for (const p of PRINT_PATHS) revalidatePath(p, "layout");
 }
@@ -29,6 +29,7 @@ const infoSchema = z.object({
   tagline: z.string().optional(),
   address: z.string().optional(),
   phone: z.string().optional(),
+  email: z.string().optional(),
 });
 
 export async function saveBusinessInfo(formData: FormData): Promise<ActionResult> {
@@ -43,6 +44,7 @@ export async function saveBusinessInfo(formData: FormData): Promise<ActionResult
       tagline: d.tagline?.trim() || null,
       address: d.address?.trim() || null,
       phone: d.phone?.trim() || null,
+      email: d.email?.trim() || null,
     };
     await prisma.businessSettings.upsert({
       where: { id: SETTINGS_ID },

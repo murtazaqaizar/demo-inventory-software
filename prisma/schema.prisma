@@ -561,6 +561,7 @@ model BusinessSettings {
   tagline String?
   address String?
   phone   String?
+  email   String? // printed on purchase orders (issuer block)
 
   mode LetterheadMode @default(NONE)
 
@@ -676,4 +677,50 @@ model QuotationPayment {
   chequeDate   String? // as typed on the form, YYYY-MM-DD
 
   @@index([quotationId])
+}
+
+// ---------------------------------------------------------------------------
+// Purchase orders — a slip given to a vendor: "I am buying this from you,
+// under my name". A record only: no stock, no supplier payable, no cash/bank.
+// The real stock purchase is Purchase; the two are not linked.
+// ---------------------------------------------------------------------------
+
+enum PurchaseOrderStatus {
+  OPEN
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id            String              @id @default(cuid())
+  number        Int                 @unique @default(autoincrement()) // shown as PO-1, PO-2…
+  date          DateTime            @default(now())
+  status        PurchaseOrderStatus @default(OPEN)
+  // Vendor typed on each order (not picked from Suppliers) — printed on the left.
+  vendorName    String
+  vendorContact String?
+  vendorPhone   String?
+  vendorAddress String?
+  notes         String?
+  createdById   String?
+  closedAt      DateTime? // when it was received or cancelled
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  items PurchaseOrderItem[]
+
+  @@index([status, date])
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  description     String
+  unit            String        @default("pcs")
+  qtyMilli        Int
+  ratePaisa       Int
+  position        Int           @default(0) // keeps the typed line order
+
+  @@index([purchaseOrderId])
 }

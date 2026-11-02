@@ -5,4 +5,5 @@ export const BUSINESS = {
   tagline: "Hardware · Tools · Industrial Supplies",
   address: "[Shop address, city]", // TODO: fill real address
   phone: "[03xx-xxxxxxx]", // TODO: fill real phone
+  email: null as string | null,
 };

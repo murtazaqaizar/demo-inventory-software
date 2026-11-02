@@ -98,6 +98,16 @@ export function SettingsForms({ settings }: { settings: BusinessSettings }) {
             />
           </div>
           <div className="sm:col-span-2">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              id="email"
+              name="email"
+              type="email"
+              defaultValue={settings.email ?? ""}
+              placeholder="Printed on purchase orders"
+            />
+          </div>
+          <div className="sm:col-span-2">
             <Label htmlFor="tagline">Line under the name</Label>
             <Input
               id="tagline"

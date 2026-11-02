@@ -11,6 +11,7 @@ export type BusinessSettings = {
   tagline: string | null;
   address: string | null;
   phone: string | null;
+  email: string | null;
   mode: LetterheadMode;
   hasImage: boolean;
   letterheadName: string | null;
